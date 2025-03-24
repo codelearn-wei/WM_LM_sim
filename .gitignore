@@ -1,2 +1,14 @@
 LM_data/data
 LM_data/map
+train_bev_images
+train_bev_images/vehicle_tracks_000
+train_bev_images/vehicle_tracks_001
+train_bev_images/vehicle_tracks_002
+train_bev_images/vehicle_tracks_003
+train_bev_images/vehicle_tracks_004
+train_bev_images/vehicle_tracks_005
+train_bev_images/vehicle_tracks_006
+train_bev_images/vehicle_tracks_007
+train_bev_images/vehicle_tracks_008
+train_bev_images/vehicle_tracks_009
+train_bev_images/vehicle_tracks_010
