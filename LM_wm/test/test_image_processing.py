@@ -34,9 +34,9 @@ def test_image_processing():
     )
     
     # 打印图像信息
-    print(f"原始图像大小: {original_frame.shape}")
-    print(f"处理后图像大小: {processed_frame.shape}")
-    print(f"图像已保存到: {output_dir / 'processed_image_comparison.png'}")
+    # print(f"原始图像大小: {original_frame.shape}")
+    # print(f"处理后图像大小: {processed_frame.shape}")
+    # print(f"图像已保存到: {output_dir / 'processed_image_comparison.png'}")
 
 if __name__ == "__main__":
     test_image_processing() 

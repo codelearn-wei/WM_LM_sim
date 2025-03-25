@@ -3,6 +3,8 @@ from torch.utils.data import Dataset
 from pathlib import Path
 import cv2
 import numpy as np
+from LM_wm.configs.config import IMAGE_SIZE
+from LM_wm.utils.image_utils import maintain_aspect_ratio_resize
 
 class LMTrainingDataset(Dataset):
     def __init__(self, data_dir: str, history_steps: int = 20):
@@ -61,7 +63,13 @@ class LMTrainingDataset(Dataset):
         """处理图像"""
         img = cv2.imread(str(image_path))
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        img = torch.from_numpy(img).permute(2, 0, 1).float() / 255.0
+        # 使用maintain_aspect_ratio_resize调整图像尺寸，保持宽高比
+        img = maintain_aspect_ratio_resize(img, target_size=IMAGE_SIZE)
+        # 确保图像是3通道的
+        if len(img.shape) != 3:
+            raise ValueError(f"图像维度不正确: {img.shape}")
+        # 直接转换为tensor并归一化，确保维度为(C, H, W)
+        img = torch.from_numpy(img).float().permute(2, 0, 1) / 255.0
         return img
     
     def __len__(self):

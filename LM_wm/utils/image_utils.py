@@ -26,9 +26,9 @@ def maintain_aspect_ratio_resize(image, target_size=(224, 224)):
     new_h = int(h * (target_w / w))
     
     # 打印调试信息
-    print(f"原始图像大小: {h}x{w}")
-    print(f"调整后大小: {new_h}x{new_w}")
-    print(f"图像值范围: {image.min()}-{image.max()}")
+    # print(f"原始图像大小: {h}x{w}")
+    # print(f"调整后大小: {new_h}x{new_w}")
+    # print(f"图像值范围: {image.min()}-{image.max()}")
     
     # 调整图像大小
     resized = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
