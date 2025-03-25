@@ -7,9 +7,9 @@ import torch.utils.data as torch_data
 from LM_vis import SceneVisualizer
 from LM_scene import LMScene
 from train_bev_gen import BEVGenerator
-from dataloader.x_y_dataloader import XYTrafficDataset 
 from train_raw_data import (
     organize_by_frame, 
+    classify_vehicles_by_frame_1,
     filter_vehicles_by_x, 
     classify_vehicles, 
     filter_all_boundaries
@@ -18,8 +18,7 @@ from train_raw_data import (
 #! 数据处理主类
 #! 三种功能
 #! 1. 生成回放场景视频
-#! 2. 生成真实训练数据
-#! 3. 生成真实训练BEV图像
+#! 2. 生成真实训练BEV图像
 
 class LaneMergingDataProcessor:
     def __init__(self, map_path: str, base_data_path: str):
@@ -53,113 +52,7 @@ class LaneMergingDataProcessor:
             visualizer.save_scene(output_dir=str(output_dir), fps=fps)
 
             print(f"处理 {csv_file.name}, 场景数量: {len(scene.get_scene())}")
-
-    def generate_real_training_data(
-        self, 
-        output_base_dir: str, 
-        history_steps: int = 20,  # 历史时间步长
-        future_steps: int = 1,    # 预测未来时间步长 
-        max_vehicles: int = 10,   # 最大车辆数
-        max_aux_vehicles: int = 5,  # 最大辅助车辆数
-        x_threshold: float = 1055.0,  # X轴过滤阈值
-    ) -> List[torch_data.Dataset]:
-        """
-        生成真实训练数据集，带进度可视化
-
-        Args:
-            output_base_dir (str): 输出基础目录
-            history_steps (int, optional): 历史时间步长. 默认为 20.
-            future_steps (int, optional): 预测未来时间步长. 默认为 1.
-            max_vehicles (int, optional): 最大主车辆数. 默认为 10.
-            max_aux_vehicles (int, optional): 最大辅助车辆数. 默认为 5.
-            x_threshold (float, optional): X轴过滤阈值. 默认为 1055.0.
-
-        Returns:
-            List[torch_data.Dataset]: 训练数据集列表
-        """
-        Path(output_base_dir).mkdir(parents=True, exist_ok=True)
-        all_datasets = []
-
-        # 获取所有CSV文件
-        csv_files = list(Path(self.base_data_path).glob("*.csv"))
-        print(f"找到 {len(csv_files)} 个CSV文件待处理")
-        
-        # 使用tqdm创建总进度条
-        for file_idx, csv_file in enumerate(tqdm(csv_files, desc="处理CSV文件")):
-            start_time = time.time()
-            file_name = csv_file.stem
-            output_dir = Path(output_base_dir)
-            output_dir.mkdir(parents=True, exist_ok=True)
-
-            print(f"\n[{file_idx+1}/{len(csv_files)}] 处理文件: {file_name}")
-            
-            # 加载场景数据
-            print("  ├─ 加载场景数据...")
-            scene = LMScene(self.map_path, str(csv_file))
-            
-            # 组织帧数据
-            print("  ├─ 组织帧数据...")
-            frame_data = organize_by_frame(scene.vehicles)
-            total_frames = len(frame_data)
-            print(f"  │  └─ 总帧数: {total_frames}")
-            
-            # 过滤车辆
-            print("  ├─ 按X轴过滤车辆...")
-            filtered_data = filter_vehicles_by_x(frame_data, x_threshold=x_threshold)
-            
-            # 获取边界
-            print("  ├─ 提取道路边界...")
-            upper_bd = scene.get_upper_boundary()
-            auxiliary_bd = scene.get_auxiliary_dotted_line()
-            
-            # 分类车辆
-            print("  ├─ 分类车辆...")
-            raw_data = classify_vehicles(
-                filtered_data, 
-                upper_bd, 
-                auxiliary_bd, 
-            )
-            
-            # 创建数据集
-            print("  ├─ 创建数据集...")
-            try:
-                # 使用带有进度显示的包装器
-                with tqdm(total=100, desc="  │  └─ 数据集构建", leave=False) as pbar:
-                    # 设置监控点
-                    def progress_callback(stage, progress):
-                        pbar.set_description(f"  │  └─ {stage}")
-                        pbar.update(int(progress * 100) - pbar.n)
-                    
-                    # 创建数据集实例
-                    dataset = XYTrafficDataset(
-                        raw_data,
-                        history_steps=history_steps, 
-                        future_steps=future_steps, 
-                        max_nearby_vehicles=max_vehicles, 
-                        max_aux_vehicles=max_aux_vehicles,
-                        progress_callback=progress_callback  # 添加进度回调
-                    )
-                
-                if len(dataset) > 0:
-                    dataset_path = output_dir / f"{file_name}_dataset.pt"
-                    
-                    # 保存数据集
-                    print(f"  ├─ 保存数据集 ({len(dataset)} 个样本)...")
-                    torch.save(dataset, dataset_path)
-                    
-                    all_datasets.append(dataset)
-                else:
-                    print(f"  └─ 文件 {file_name} 未生成训练数据 (样本数为0)")
-            
-            except Exception as e:
-                print(f"  └─ 处理文件 {file_name} 时出错: {str(e)}")
-                
-        # 打印整体统计
-        total_samples = sum(len(dataset) for dataset in all_datasets)
-        print(f"\n处理完成! 共生成 {len(all_datasets)} 个数据集，总计 {total_samples} 个样本")
-        
-        return all_datasets
-    
+ 
     def generate_bev_images(self, output_base_dir: str, image_size: tuple = (300, 800), resolution: float = 0.1):
         """
         生成BEV（鸟瞰图）图像
@@ -236,18 +129,7 @@ def main():
     # 1. 生成场景视频
     # processor.save_scenes_as_videos("case_videos_all")
 
-    # 2. 生成真实训练数据
-    # 使用自定义参数生成训练数据
-    
-    # processor.generate_real_training_data(
-    #     "get_LM_scene/train_data_xy",
-    #     history_steps=20,      # 增加历史时间步长
-    #     future_steps=1,        # 增加预测未来时间步长
-    #     max_vehicles=10,       # 增加最大主车辆数
-    #     max_aux_vehicles=5,   # 增加最大辅助车辆数
-    # )
-
-    # 3. 生成BEV图像
+    # 2. 生成BEV图像
     processor.generate_bev_images("train_bev_images")
 
 

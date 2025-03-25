@@ -12,3 +12,17 @@ train_bev_images/vehicle_tracks_007
 train_bev_images/vehicle_tracks_008
 train_bev_images/vehicle_tracks_009
 train_bev_images/vehicle_tracks_010
+LM_wm/training_data
+LM_wm/validation_data
+
+# 忽略所有 __pycache__ 目录
+__pycache__/
+
+# 忽略所有 .pyc 文件
+*.pyc
+
+# 忽略所有 .pyo 文件（优化后的字节码）
+*.pyo
+
+# 忽略所有 .pyd 文件（Windows 动态链接库）
+*.pyd

@@ -23,7 +23,7 @@
             "name": "Python 调试程序: 从项目根目录运行",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/main.py",
+            "program": "${workspaceFolder}/LM_wm",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "justMyCode": true
