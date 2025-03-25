@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 from transformers import AutoImageProcessor, Dinov2Model, AutoModel
+import torchvision
+from torch.optim import AdamW
 
 class BEVEncoder(nn.Module):
     def __init__(self, device=None):
@@ -142,173 +144,271 @@ class BEVPredictor(nn.Module):
         
         return prediction
 
-class SpatialAttention(nn.Module):
-    def __init__(self, input_dim):
+class UNetDecoder(nn.Module):
+    def __init__(self, input_dim, hidden_dims=[256, 128, 64, 32, 16], output_channels=3):
         super().__init__()
-        self.attention = nn.Linear(input_dim, 1)
-
-    def forward(self, x):
-        attention = torch.sigmoid(self.attention(x))
-        return (x * attention).sum(dim=1)
-
-class ImageDecoder(nn.Module):
-    def __init__(self, input_dim, hidden_dim):
-        super().__init__()
-        self.decoder = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
+        self.hidden_dims = hidden_dims
+        self.hidden_dim = hidden_dims[0]  # 使用第一个维度作为主要隐藏维度
+        
+        # 初始特征转换
+        self.initial_conv = nn.Sequential(
+            nn.Linear(input_dim, self.hidden_dim * 7 * 7),
             nn.ReLU(),
-            nn.Linear(hidden_dim, 3 * 256 * 256)
+            nn.Unflatten(1, (self.hidden_dim, 7, 7))
         )
-
+        
+        # 上采样层
+        self.up1 = nn.Sequential(
+            nn.ConvTranspose2d(self.hidden_dim, self.hidden_dims[1], kernel_size=4, stride=2, padding=1),
+            nn.BatchNorm2d(self.hidden_dims[1]),
+            nn.ReLU()
+        )
+        
+        self.up2 = nn.Sequential(
+            nn.ConvTranspose2d(self.hidden_dims[1], self.hidden_dims[2], kernel_size=4, stride=2, padding=1),
+            nn.BatchNorm2d(self.hidden_dims[2]),
+            nn.ReLU()
+        )
+        
+        self.up3 = nn.Sequential(
+            nn.ConvTranspose2d(self.hidden_dims[2], self.hidden_dims[3], kernel_size=4, stride=2, padding=1),
+            nn.BatchNorm2d(self.hidden_dims[3]),
+            nn.ReLU()
+        )
+        
+        self.up4 = nn.Sequential(
+            nn.ConvTranspose2d(self.hidden_dims[3], self.hidden_dims[4], kernel_size=4, stride=2, padding=1),
+            nn.BatchNorm2d(self.hidden_dims[4]),
+            nn.ReLU()
+        )
+        
+        # 最终输出层
+        self.final_conv = nn.Sequential(
+            nn.ConvTranspose2d(self.hidden_dims[4], output_channels, kernel_size=4, stride=2, padding=1),
+            nn.Sigmoid()
+        )
+        
+        # 跳跃连接 - 修改为正确的通道数和尺寸
+        self.skip1 = nn.Sequential(
+            nn.Conv2d(self.hidden_dims[1], self.hidden_dims[2], 1),
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
+        )
+        self.skip2 = nn.Sequential(
+            nn.Conv2d(self.hidden_dims[2], self.hidden_dims[3], 1),
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
+        )
+        self.skip3 = nn.Sequential(
+            nn.Conv2d(self.hidden_dims[3], self.hidden_dims[4], 1),
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
+        )
+        self.skip4 = nn.Sequential(
+            nn.Conv2d(self.hidden_dims[4], self.hidden_dims[4], 1),
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
+        )
+        
     def forward(self, x):
-        return self.decoder(x).reshape(-1, 3, 256, 256)
+        # 初始特征转换
+        x = self.initial_conv(x)  # (B, 256, 7, 7)
+        
+        # 上采样路径
+        x1 = self.up1(x)          # (B, 128, 14, 14)
+        x2 = self.up2(x1)         # (B, 64, 28, 28)
+        x3 = self.up3(x2)         # (B, 32, 56, 56)
+        x4 = self.up4(x3)         # (B, 16, 112, 112)
+        
+        # 跳跃连接 - 修改为正确的连接方式
+        x2 = x2 + self.skip1(x1)  # 将128通道转换为64通道
+        x3 = x3 + self.skip2(x2)  # 将64通道转换为32通道
+        x4 = x4 + self.skip3(x3)  # 将32通道转换为16通道
+        
+        # 最终输出
+        out = self.final_conv(x4)  # (B, 3, 224, 224)
+        return out
 
-class CombinedLoss(nn.Module):
-    def __init__(self):
-        super().__init__()
-
-    def forward(self, pred_image, target_image, pred_features, target_features):
-        image_loss = nn.MSELoss()(pred_image, target_image)
-        feature_loss = nn.MSELoss()(pred_features, target_features)
-        return image_loss + feature_loss
-
-class BEVPredictionModel(nn.Module):
-    def __init__(self, action_dim, history_steps, hidden_dim, device):
+class PerceptualLoss(nn.Module):
+    def __init__(self, device='cuda'):
         super().__init__()
         self.device = device
+        # 加载预训练的VGG模型
+        vgg = torchvision.models.vgg16(pretrained=True).features[:16].to(device)
+        self.vgg = nn.Sequential(*list(vgg))
+        for param in self.vgg.parameters():
+            param.requires_grad = False
+        self.vgg.eval()
+        
+    def forward(self, x, y):
+        # 提取特征
+        x_features = self.vgg(x)
+        y_features = self.vgg(y)
+        return nn.MSELoss()(x_features, y_features)
+
+class CombinedLoss(nn.Module):
+    def __init__(self, alpha=0.5, beta=0.3):
+        super().__init__()
+        self.alpha = alpha
+        self.beta = beta
+        self.mse_loss = nn.MSELoss()
+        self.perceptual_loss = PerceptualLoss()
+        
+    def forward(self, pred_image, target_image, pred_features, target_features):
+        # 图像重建损失
+        reconstruction_loss = self.mse_loss(pred_image, target_image)
+        
+        # 感知损失
+        perceptual_loss = self.perceptual_loss(pred_image, target_image)
+        
+        # 特征空间损失
+        feature_loss = self.mse_loss(pred_features, target_features)
+        
+        # 组合损失
+        total_loss = reconstruction_loss + self.alpha * perceptual_loss + self.beta * feature_loss
+        return total_loss
+
+class BEVPredictionModel(nn.Module):
+    def __init__(self, action_dim, history_steps, hidden_dim, device, mode='feature'):
+        super().__init__()
+        self.device = device
+        self.mode = mode
         self.history_steps = history_steps
         
         # 初始化DINOv2模型和处理器
-        self.processor = AutoImageProcessor.from_pretrained("facebook/dinov2-base", do_rescale=False)
-        self.dino_model = AutoModel.from_pretrained("facebook/dinov2-base")
+        self.dino_processor = AutoImageProcessor.from_pretrained("facebook/dinov2-base")
+        self.dino_model = AutoModel.from_pretrained("facebook/dinov2-base").to(device)
         
-        # 将DINOv2模型移到指定设备并设置为评估模式
-        self.dino_model = self.dino_model.to(device)
-        self.dino_model.eval()
-        
-        # 冻结DINOv2参数
+        # 冻结DINOv2模型参数
         for param in self.dino_model.parameters():
             param.requires_grad = False
-            
-        # 获取DINOv2的输出维度
-        dino_output_dim = self.dino_model.config.hidden_size
         
-        # 动作编码器
-        self.action_encoder = nn.Sequential(
-            nn.Linear(action_dim, hidden_dim),
+        # 特征编码器
+        self.feature_encoder = nn.Sequential(
+            nn.Linear(768, hidden_dim),
             nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim)
-        ).to(device)
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU()
+        )
         
-        # 空间注意力层
-        self.spatial_attention = SpatialAttention(dino_output_dim).to(device)
+        # 动作编码器 - 修改输入维度为30（动作维度）
+        self.action_encoder = nn.Sequential(
+            nn.Linear(30, hidden_dim),  # 修改为固定的动作维度30
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU()
+        )
         
-        # LSTM层
-        self.lstm = nn.LSTM(
-            input_size=dino_output_dim + hidden_dim,
-            hidden_size=hidden_dim,
-            num_layers=2,
-            batch_first=True
-        ).to(device)
-        
-        # 特征解码器
-        self.feature_decoder = nn.Sequential(
+        # 特征预测器 - 修改输入维度为768 + hidden_dim
+        self.feature_predictor = nn.Sequential(
+            nn.Linear(768 + hidden_dim, hidden_dim),  # 修改输入维度
+            nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
-            nn.Linear(hidden_dim, dino_output_dim)
-        ).to(device)
+            nn.Linear(hidden_dim, 768)  # 输出维度与DINOv2特征维度相同
+        )
         
-        # 图像解码器
-        self.image_decoder = ImageDecoder(dino_output_dim, hidden_dim).to(device)
+        # 特征损失函数
+        self.feature_loss_fn = nn.MSELoss()
         
-        # 组合损失函数
-        self.loss_fn = CombinedLoss()
+        # 如果是图像生成模式，初始化图像解码器和相关损失函数
+        if mode == 'image':
+            # 图像解码器
+            self.image_decoder = UNetDecoder(
+                input_dim=768,
+                hidden_dims=[256, 128, 64, 32, 16],
+                output_channels=3
+            )
+            
+            # 图像损失函数
+            self.image_loss_fn = CombinedLoss()
         
+        # 初始化优化器
+        self.optimizer = AdamW(self.parameters(), lr=1e-4)
+    
     def encode_image(self, image):
-        """使用DINOv2编码图像，返回特征和注意力图"""
+        """使用DINOv2编码图像"""
         # 确保图像在正确的设备上
         image = image.to(self.device)
         
         if len(image.shape) == 4:  # (B, C, H, W)
             B, C, H, W = image.shape
             encodings = []
-            attention_maps = []
-            
             for i in range(B):
                 single_image = image[i]
                 single_image = single_image.permute(1, 2, 0)
                 single_image = (single_image * 255).byte()
                 single_image = single_image.cpu().numpy()
                 
-                inputs = self.processor(images=single_image, return_tensors="pt")
+                inputs = self.dino_processor(images=single_image, return_tensors="pt")
                 pixel_values = inputs['pixel_values'].to(self.device)
                 
                 with torch.no_grad():
-                    outputs = self.dino_model(pixel_values, output_attentions=True)
+                    outputs = self.dino_model(pixel_values)
                 
-                # 获取特征和注意力图
-                feature = outputs.last_hidden_state[:, 0, :]
-                attention = outputs.attentions[-1].mean(dim=1)  # 使用最后一层的注意力
-                
-                encodings.append(feature)
-                attention_maps.append(attention)
+                encodings.append(outputs.last_hidden_state[:, 0, :])
             
-            return torch.cat(encodings, dim=0), torch.cat(attention_maps, dim=0)
-        else:
+            return torch.cat(encodings, dim=0)
+        else:  # (C, H, W)
             image = image.permute(1, 2, 0)
             image = (image * 255).byte()
             image = image.cpu().numpy()
             
-            inputs = self.processor(images=image, return_tensors="pt")
+            inputs = self.dino_processor(images=image, return_tensors="pt")
             pixel_values = inputs['pixel_values'].to(self.device)
             
             with torch.no_grad():
-                outputs = self.dino_model(pixel_values, output_attentions=True)
+                outputs = self.dino_model(pixel_values)
             
-            return outputs.last_hidden_state[:, 0, :], outputs.attentions[-1].mean(dim=1)
+            return outputs.last_hidden_state[:, 0, :]
     
     def forward(self, bev_frames, actions, next_frame):
         """前向传播"""
+        # 确保输入在正确的设备上
         bev_frames = bev_frames.to(self.device)
         actions = actions.to(self.device)
         next_frame = next_frame.to(self.device)
         
         # 编码历史帧
         history_encodings = []
-        attention_maps = []
         for t in range(self.history_steps):
             frame = bev_frames[:, t]
-            encoding, attention = self.encode_image(frame)
+            encoding = self.encode_image(frame)
             history_encodings.append(encoding)
-            attention_maps.append(attention)
         
-        # 堆叠历史编码和注意力图
+        # 堆叠历史编码
         history_encodings = torch.stack(history_encodings, dim=1)
-        attention_maps = torch.stack(attention_maps, dim=1)
         
-        # 应用空间注意力
-        attended_features = self.spatial_attention(history_encodings)
+        # 编码动作 - 确保动作维度正确
+        batch_size, seq_len, _ = actions.shape
+        actions_flat = actions.reshape(-1, 30)  # 将动作展平为 (batch_size * seq_len, 30)
+        action_encodings = self.action_encoder(actions_flat)
+        action_encodings = action_encodings.reshape(batch_size, seq_len, -1)  # 重塑回原始序列形状
         
-        # 编码动作
-        action_encodings = self.action_encoder(actions)
+        # 连接特征 - 直接使用原始DINOv2特征和动作编码
+        combined_features = torch.cat([history_encodings[:, -1], action_encodings[:, -1]], dim=-1)
         
-        # 连接特征
-        lstm_input = torch.cat([attended_features, action_encodings], dim=-1)
+        # 预测下一帧特征
+        pred_features = self.feature_predictor(combined_features)
         
-        # LSTM处理
-        lstm_out, _ = self.lstm(lstm_input)
+        # 获取目标特征
+        target_features = self.encode_image(next_frame)
         
-        # 解码特征
-        pred_features = self.feature_decoder(lstm_out[:, -1])
+        if self.mode == 'feature':
+            return pred_features, target_features
+        else:
+            # 图像生成模式
+            pred_image = self.image_decoder(pred_features)
+            return pred_features, target_features, pred_image, next_frame
         
-        # 生成预测图像
-        pred_image = self.image_decoder(pred_features)
+    def compute_loss(self, pred_features, target_features, pred_image=None, target_image=None):
+        """
+        计算损失函数
+        """
+        # 特征预测损失
+        feature_loss = self.feature_loss_fn(pred_features, target_features)
         
-        # 编码目标帧
-        target_features, _ = self.encode_image(next_frame)
-        
-        return pred_features, target_features, pred_image, next_frame
-    
-    def compute_loss(self, pred_features, target_features, pred_image, target_image):
-        """计算组合损失"""
-        return self.loss_fn(pred_image, target_image, pred_features, target_features)
+        if self.mode == 'feature':
+            return feature_loss
+        else:
+            # 图像生成损失
+            image_loss = self.image_loss_fn(pred_image, target_image, pred_features, target_features)
+            # 组合损失
+            total_loss = feature_loss + image_loss
+            return total_loss
