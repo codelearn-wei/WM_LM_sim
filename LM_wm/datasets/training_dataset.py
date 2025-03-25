@@ -70,8 +70,7 @@ class LMTrainingDataset(Dataset):
             raise ValueError(f"图像维度不正确: {img.shape}")
         # 直接转换为tensor并归一化，确保维度为(C, H, W)
         img = torch.from_numpy(img).float().permute(2, 0, 1) / 255.0
-        return img
-    
+        return img    
     def __len__(self):
         """返回数据集大小"""
         return len(self.sequences)

@@ -264,66 +264,20 @@ class CombinedLoss(nn.Module):
         total_loss = reconstruction_loss + self.alpha * perceptual_loss + self.beta * feature_loss
         return total_loss
 
-class BEVPredictionModel(nn.Module):
-    def __init__(self, action_dim, history_steps, hidden_dim, device, mode='feature'):
+class DINOEncoder(nn.Module):
+    """DINOv2特征编码器"""
+    def __init__(self, device):
         super().__init__()
         self.device = device
-        self.mode = mode
-        self.history_steps = history_steps
+        self.processor = AutoImageProcessor.from_pretrained("facebook/dinov2-base")
+        self.model = AutoModel.from_pretrained("facebook/dinov2-base").to(device)
         
-        # 初始化DINOv2模型和处理器
-        self.dino_processor = AutoImageProcessor.from_pretrained("facebook/dinov2-base")
-        self.dino_model = AutoModel.from_pretrained("facebook/dinov2-base").to(device)
-        
-        # 冻结DINOv2模型参数
-        for param in self.dino_model.parameters():
+        # 冻结DINOv2参数
+        for param in self.model.parameters():
             param.requires_grad = False
-        
-        # 特征编码器
-        self.feature_encoder = nn.Sequential(
-            nn.Linear(768, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU()
-        )
-        
-        # 动作编码器 - 修改输入维度为30（动作维度）
-        self.action_encoder = nn.Sequential(
-            nn.Linear(30, hidden_dim),  # 修改为固定的动作维度30
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU()
-        )
-        
-        # 特征预测器 - 修改输入维度为768 + hidden_dim
-        self.feature_predictor = nn.Sequential(
-            nn.Linear(768 + hidden_dim, hidden_dim),  # 修改输入维度
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, 768)  # 输出维度与DINOv2特征维度相同
-        )
-        
-        # 特征损失函数
-        self.feature_loss_fn = nn.MSELoss()
-        
-        # 如果是图像生成模式，初始化图像解码器和相关损失函数
-        if mode == 'image':
-            # 图像解码器
-            self.image_decoder = UNetDecoder(
-                input_dim=768,
-                hidden_dims=[256, 128, 64, 32, 16],
-                output_channels=3
-            )
-            
-            # 图像损失函数
-            self.image_loss_fn = CombinedLoss()
-        
-        # 初始化优化器
-        self.optimizer = AdamW(self.parameters(), lr=1e-4)
     
-    def encode_image(self, image):
-        """使用DINOv2编码图像"""
+    def forward(self, image):
+        """编码图像"""
         # 确保图像在正确的设备上
         image = image.to(self.device)
         
@@ -336,11 +290,11 @@ class BEVPredictionModel(nn.Module):
                 single_image = (single_image * 255).byte()
                 single_image = single_image.cpu().numpy()
                 
-                inputs = self.dino_processor(images=single_image, return_tensors="pt")
+                inputs = self.processor(images=single_image, return_tensors="pt")
                 pixel_values = inputs['pixel_values'].to(self.device)
                 
                 with torch.no_grad():
-                    outputs = self.dino_model(pixel_values)
+                    outputs = self.model(pixel_values)
                 
                 encodings.append(outputs.last_hidden_state[:, 0, :])
             
@@ -350,13 +304,84 @@ class BEVPredictionModel(nn.Module):
             image = (image * 255).byte()
             image = image.cpu().numpy()
             
-            inputs = self.dino_processor(images=image, return_tensors="pt")
+            inputs = self.processor(images=image, return_tensors="pt")
             pixel_values = inputs['pixel_values'].to(self.device)
             
             with torch.no_grad():
-                outputs = self.dino_model(pixel_values)
+                outputs = self.model(pixel_values)
             
             return outputs.last_hidden_state[:, 0, :]
+
+class FeatureEncoder(nn.Module):
+    """特征编码器"""
+    def __init__(self, input_dim, hidden_dim):
+        super().__init__()
+        self.encoder = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU()
+        )
+    
+    def forward(self, x):
+        return self.encoder(x)
+
+class ActionEncoder(nn.Module):
+    """动作编码器"""
+    def __init__(self, action_dim, hidden_dim):
+        super().__init__()
+        self.encoder = nn.Sequential(
+            nn.Linear(action_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU()
+        )
+    
+    def forward(self, x):
+        return self.encoder(x)
+
+class FeaturePredictor(nn.Module):
+    """特征预测器"""
+    def __init__(self, input_dim, hidden_dim, output_dim):
+        super().__init__()
+        self.predictor = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, output_dim)
+        )
+    
+    def forward(self, x):
+        return self.predictor(x)
+
+class BEVPredictionModel(nn.Module):
+    def __init__(self, action_dim, history_steps, hidden_dim, device, mode='feature'):
+        super().__init__()
+        self.device = device
+        self.mode = mode
+        self.history_steps = history_steps
+        
+        # 初始化各个模块
+        self.dino_encoder = DINOEncoder(device)
+        self.feature_encoder = FeatureEncoder(768, hidden_dim)
+        self.action_encoder = ActionEncoder(30, hidden_dim)
+        self.feature_predictor = FeaturePredictor(768 + hidden_dim, hidden_dim, 768)
+        
+        # 特征损失函数
+        self.feature_loss_fn = nn.MSELoss()
+        
+        # 如果是图像生成模式，初始化图像解码器和相关损失函数
+        if mode == 'image':
+            self.image_decoder = UNetDecoder(
+                input_dim=768,
+                hidden_dims=[256, 128, 64, 32, 16],
+                output_channels=3
+            )
+            self.image_loss_fn = CombinedLoss()
+        
+        # 初始化优化器
+        self.optimizer = AdamW(self.parameters(), lr=1e-4)
     
     def forward(self, bev_frames, actions, next_frame):
         """前向传播"""
@@ -369,26 +394,26 @@ class BEVPredictionModel(nn.Module):
         history_encodings = []
         for t in range(self.history_steps):
             frame = bev_frames[:, t]
-            encoding = self.encode_image(frame)
+            encoding = self.dino_encoder(frame)
             history_encodings.append(encoding)
         
         # 堆叠历史编码
         history_encodings = torch.stack(history_encodings, dim=1)
         
-        # 编码动作 - 确保动作维度正确
+        # 编码动作
         batch_size, seq_len, _ = actions.shape
-        actions_flat = actions.reshape(-1, 30)  # 将动作展平为 (batch_size * seq_len, 30)
+        actions_flat = actions.reshape(-1, 30)
         action_encodings = self.action_encoder(actions_flat)
-        action_encodings = action_encodings.reshape(batch_size, seq_len, -1)  # 重塑回原始序列形状
+        action_encodings = action_encodings.reshape(batch_size, seq_len, -1)
         
-        # 连接特征 - 直接使用原始DINOv2特征和动作编码
+        # 连接特征
         combined_features = torch.cat([history_encodings[:, -1], action_encodings[:, -1]], dim=-1)
         
         # 预测下一帧特征
         pred_features = self.feature_predictor(combined_features)
         
         # 获取目标特征
-        target_features = self.encode_image(next_frame)
+        target_features = self.dino_encoder(next_frame)
         
         if self.mode == 'feature':
             return pred_features, target_features
@@ -396,11 +421,9 @@ class BEVPredictionModel(nn.Module):
             # 图像生成模式
             pred_image = self.image_decoder(pred_features)
             return pred_features, target_features, pred_image, next_frame
-        
+    
     def compute_loss(self, pred_features, target_features, pred_image=None, target_image=None):
-        """
-        计算损失函数
-        """
+        """计算损失函数"""
         # 特征预测损失
         feature_loss = self.feature_loss_fn(pred_features, target_features)
         

@@ -1,7 +1,6 @@
 from pathlib import Path
 import torch
 import torchvision
-from transformers import AutoImageProcessor, AutoModel
 
 # Data paths
 MAP_PATH = "LM_data/map/DR_CHN_Merging_ZS.json"
@@ -17,7 +16,7 @@ LEARNING_RATE = 1e-4
 HISTORY_STEPS = 20
 HIDDEN_DIM = 256
 VALIDATION_FREQ = 5
-EARLY_STOPPING_PATIENCE = 10
+EARLY_STOPPING_PATIENCE = 5
 
 # Model parameters
 ACTION_DIM = 30  # 10辆车 × 3个动作值
@@ -51,10 +50,12 @@ class Config:
     def __init__(self):
         # 数据相关配置
         self.data_dir = "LM_wm/training_data"
-        self.batch_size = 32
+        self.batch_size = 64
         self.num_workers = 4
-        self.history_steps = 5
-        self.action_dim = 2
+        self.history_steps = 10
+        self.max_vehicles = 10 ## 定义最大车辆数量
+        self.action_num = 3 ## 定义动作的维度
+        self.action_dim = self.max_vehicles * self.action_num ## 定义动作的维度
         
         # 模型相关配置
         self.hidden_dim = 256
@@ -62,12 +63,12 @@ class Config:
         self.image_size = IMAGE_SIZE
         
         # 训练相关配置
-        self.num_epochs = 100
+        self.num_epochs = 40
         self.learning_rate = 1e-4
         self.weight_decay = 1e-5
         self.warmup_steps = 1000
         self.gradient_clip = 1.0
-        self.early_stopping_patience = 10
+        self.early_stopping_patience = 5
         
         # 训练模式配置
         self.train_mode = "feature"  # 可选: "feature" 或 "image"
@@ -85,8 +86,8 @@ class Config:
         }
         
         # 日志和保存配置
-        self.log_dir = "logs"
-        self.save_dir = "checkpoints"
+        self.log_dir = "LM_wm/logs"
+        self.save_dir = "LM_wm/checkpoints"
         self.log_interval = 10
         self.save_interval = 5
         

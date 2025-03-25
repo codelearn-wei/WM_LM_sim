@@ -2,6 +2,9 @@ import argparse
 from scripts.generate_data import generate_training_data
 from scripts.train import train_model
 
+# 运行命令为 python LM_wm/main.py --train --mode feature
+# 运行命令为 python LM_wm/main.py --generate_data --mode feature
+# 运行命令为 python LM_wm/main.py --train --mode image
 def parse_args():
     parser = argparse.ArgumentParser(description='BEV Prediction Training')
     parser.add_argument('--generate_data', action='store_true', help='生成训练数据')

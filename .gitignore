@@ -16,7 +16,9 @@ LM_wm/training_data
 LM_wm/validation_data
 LM_wm/models/checkpoints
 test_outputs
-checkpoints
+LM_wm/checkpoints
+LM_wm/logs
+LM_wm/test/test_outputs
 
 # 忽略所有 __pycache__ 目录
 __pycache__/

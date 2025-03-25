@@ -1,16 +1,13 @@
 import os
 import torch
-import torch.nn as nn
 from torch.utils.data import DataLoader, random_split
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from tqdm import tqdm
 import numpy as np
-from pathlib import Path
 from datasets.training_dataset import LMTrainingDataset
 from models.bev_encoder import BEVPredictionModel
 from tqdm import tqdm
-import time
 from configs.config import Config
 from utils.visualization import visualize_predictions
 from utils.logger import setup_logger
@@ -149,8 +146,12 @@ def train_feature_mode(model, train_loader, val_loader, optimizer, scheduler, co
         model.train()
         train_loss = 0
         
+        # 创建进度条
+        pbar = tqdm(train_loader, desc=f'Epoch {epoch+1}/{config.num_epochs}', 
+                   leave=True, position=0, ncols=100)
+        
         # 训练阶段
-        for batch_idx, batch in enumerate(tqdm(train_loader, desc=f'Epoch {epoch+1}/{config.num_epochs}')):
+        for batch_idx, batch in enumerate(pbar):
             optimizer.zero_grad()
             
             # 获取数据
@@ -171,9 +172,8 @@ def train_feature_mode(model, train_loader, val_loader, optimizer, scheduler, co
             
             train_loss += loss.item()
             
-            # 记录训练损失
-            if batch_idx % config.log_interval == 0:
-                logger.info(f'Epoch {epoch+1}, Batch {batch_idx}, Loss: {loss.item():.4f}')
+            # 更新进度条
+            pbar.set_postfix({'loss': f'{loss.item():.4f}'})
         
         # 验证阶段
         val_loss = validate(model, val_loader, config)
@@ -208,8 +208,12 @@ def train_image_mode(model, train_loader, val_loader, optimizer, scheduler, conf
         model.train()
         train_loss = 0
         
+        # 创建进度条
+        pbar = tqdm(train_loader, desc=f'Epoch {epoch+1}/{config.num_epochs}', 
+                   leave=True, position=0, ncols=100)
+        
         # 训练阶段
-        for batch_idx, batch in enumerate(tqdm(train_loader, desc=f'Epoch {epoch+1}/{config.num_epochs}')):
+        for batch_idx, batch in enumerate(pbar):
             optimizer.zero_grad()
             
             # 获取数据
@@ -230,18 +234,17 @@ def train_image_mode(model, train_loader, val_loader, optimizer, scheduler, conf
             
             train_loss += loss.item()
             
-            # 记录训练损失
-            if batch_idx % config.log_interval == 0:
-                logger.info(f'Epoch {epoch+1}, Batch {batch_idx}, Loss: {loss.item():.4f}')
-                
-                # 可视化预测结果
-                if batch_idx % config.vis_interval == 0:
-                    vis_images = visualize_predictions(pred_image[:config.num_vis_samples], 
-                                                    next_frame[:config.num_vis_samples])
-                    # 保存可视化结果
-                    vis_path = os.path.join(config.log_dir, f'vis_epoch_{epoch+1}_batch_{batch_idx}.png')
-                    vis_images.savefig(vis_path)
-                    plt.close(vis_images)
+            # 更新进度条
+            pbar.set_postfix({'loss': f'{loss.item():.4f}'})
+            
+            # 可视化预测结果
+            if batch_idx % config.vis_interval == 0:
+                vis_images = visualize_predictions(pred_image[:config.num_vis_samples], 
+                                                next_frame[:config.num_vis_samples])
+                # 保存可视化结果
+                vis_path = os.path.join(config.log_dir, f'vis_epoch_{epoch+1}_batch_{batch_idx}.png')
+                vis_images.savefig(vis_path)
+                plt.close(vis_images)
         
         # 验证阶段
         val_loss = validate(model, val_loader, config)

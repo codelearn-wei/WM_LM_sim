@@ -2,31 +2,51 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Python 调试程序: 当前文件",
+            "name": "Python: 训练模式",
             "type": "debugpy",
             "request": "launch",
-            "program": "${file}",
+            "program": "${workspaceFolder}/LM_wm/main.py",
             "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
-            "justMyCode": true
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+            "args": [
+                "--mode",
+                "feature",
+                "--train"
+            ]
         },
         {
-            "name": "Python 调试程序: 指定项目路径",
+            "name": "Python: 图像生成模式",
             "type": "debugpy",
             "request": "launch",
-            "program": "${file}",
+            "program": "${workspaceFolder}/LM_wm/main.py",
             "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}/LM_env",
-            "justMyCode": true
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+            "args": [
+                "--mode",
+                "image",
+                "--train"
+            ]
         },
         {
-            "name": "Python 调试程序: 从项目根目录运行",
+            "name": "Python: 仅生成数据",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/LM_wm",
+            "program": "${workspaceFolder}/LM_wm/main.py",
             "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
-            "justMyCode": true
-        }
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+            "args": [
+                "--generate_data"
+            ]
+        },
+   
     ]
 }

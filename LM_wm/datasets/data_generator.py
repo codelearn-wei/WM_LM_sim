@@ -1,6 +1,5 @@
 import numpy as np
 from pathlib import Path
-import cv2
 import sys
 import os
 from collections import defaultdict
@@ -16,6 +15,7 @@ from data_process.train_raw_data import (
     filter_all_boundaries
 )
 from data_process.train_bev_gen import BEVGenerator
+from configs.config import Config
 
 class TrainingDataGenerator:
     def __init__(self, map_path: str, base_data_path: str):
@@ -29,6 +29,7 @@ class TrainingDataGenerator:
         self.map_path = map_path
         self.base_data_path = Path(base_data_path)
         self.vehicle_history = defaultdict(list)  # 用于存储每个车辆的历史数据
+        self.config = Config()
         
     def _update_vehicle_history(self, vehicles):
         """
@@ -106,7 +107,7 @@ class TrainingDataGenerator:
         
         return classified_data, filtered_boundaries
 
-    def _process_frame_actions(self, vehicles, max_vehicles=10):
+    def _process_frame_actions(self, vehicles):
         """
         处理一帧中的车辆动作数据，只保留非主道车辆的动作
 
@@ -121,13 +122,13 @@ class TrainingDataGenerator:
         self._update_vehicle_history(vehicles)
         
         # 初始化动作数组：[ax1, ay1, dpsi1, ax2, ay2, dpsi2, ...]
-        actions = np.zeros(max_vehicles * 3)
+        actions = np.zeros(self.config.max_vehicles * self.config.action_num)
         
         # 获取非主道车辆的动作
         lane_changing_vehicles = [v for v in vehicles if v['lane_type'] == '变道车辆']
         
         # 填充动作数据
-        for i, vehicle in enumerate(lane_changing_vehicles[:max_vehicles]):
+        for i, vehicle in enumerate(lane_changing_vehicles[:self.config.max_vehicles]):
             action_data = self._compute_vehicle_actions(vehicle['track_id'])
             if action_data is not None:
                 idx = i * 3
