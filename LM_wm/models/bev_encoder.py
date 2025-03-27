@@ -188,7 +188,6 @@ class UNetDecoder(nn.Module):
             nn.Sigmoid()
         )
         
-        # 跳跃连接 - 修改为正确的通道数和尺寸
         self.skip1 = nn.Sequential(
             nn.Conv2d(self.hidden_dims[1], self.hidden_dims[2], 1),
             nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
@@ -263,6 +262,119 @@ class CombinedLoss(nn.Module):
         # 组合损失
         total_loss = reconstruction_loss + self.alpha * perceptual_loss + self.beta * feature_loss
         return total_loss
+
+class WeightedMSELoss(nn.Module):
+    """自定义的带权重的MSE损失函数，对车辆标记区域给予更高权重，忽略深灰色边界区域
+    支持渐进式权重调整，随着训练进行逐渐增加车辆区域权重
+    """
+    def __init__(self, road_weight=3.0, vehicle_weight=15.0, boundary_weight=0.01, 
+                 weight_schedule=None, current_epoch=0):
+        super().__init__()
+        self.road_weight = road_weight      # 道路区域权重
+        self.vehicle_weight = vehicle_weight  # 车辆标记区域权重
+        self.boundary_weight = boundary_weight  # 深灰色边界区域权重
+        
+        # 渐进式权重调整
+        self.weight_schedule = weight_schedule  # 权重调度字典，格式: {epoch: {"vehicle": weight, "road": weight}}
+        self.current_epoch = current_epoch
+        
+        # 更新当前使用的权重
+        self._update_weights()
+        
+    def _update_weights(self):
+        """根据当前epoch更新权重"""
+        if self.weight_schedule is None:
+            return
+            
+        # 查找当前epoch应使用的权重
+        current_weights = None
+        epochs = sorted(self.weight_schedule.keys())
+        
+        for epoch in epochs:
+            if self.current_epoch >= epoch:
+                current_weights = self.weight_schedule[epoch]
+            else:
+                break
+                
+        if current_weights:
+            self.vehicle_weight = current_weights.get("vehicle", self.vehicle_weight)
+            self.road_weight = current_weights.get("road", self.road_weight)
+            self.boundary_weight = current_weights.get("boundary", self.boundary_weight)
+    
+    def update_epoch(self, epoch):
+        """更新当前epoch并相应地调整权重"""
+        self.current_epoch = epoch
+        self._update_weights()
+        
+    def forward(self, pred, target, road_mask=None):
+        # 计算像素级MSE
+        mse = (pred - target) ** 2
+        
+        # 如果提供了道路掩码，直接使用
+        if road_mask is not None:
+            # 确保掩码维度正确 [B, H, W] -> [B, 1, H, W]
+            if road_mask.dim() == 3:
+                road_mask = road_mask.unsqueeze(1)
+                
+            # 使用提供的road_mask (1=道路区域，0=深灰色边界区域)
+            # 赋予道路区域权重
+            mask = torch.ones_like(road_mask) * self.boundary_weight  # 初始化为边界权重
+            mask = torch.where(road_mask > 0.5, torch.tensor(self.road_weight, device=mse.device), mask)  # 道路区域赋予较高权重
+            
+            # 检测红蓝标记区域(车辆)
+            # 红色: R通道高，G和B通道低
+            is_red = torch.logical_and(
+                target[:, 0] > 0.6,  # 红色通道高
+                torch.max(target[:, 1:], dim=1)[0] < 0.4  # 绿色和蓝色通道低
+            ).float().unsqueeze(1)
+            
+            # 蓝色: B通道高，R和G通道低
+            is_blue = torch.logical_and(
+                target[:, 2] > 0.6,  # 蓝色通道高
+                torch.max(target[:, :2], dim=1)[0] < 0.4  # 红色和绿色通道低
+            ).float().unsqueeze(1)
+            
+            # 车辆标记区域给予最高权重
+            is_vehicle = torch.logical_or(is_red, is_blue).float()
+            vehicle_mask = is_vehicle * self.vehicle_weight
+            mask = torch.where(vehicle_mask > 0, vehicle_mask, mask)
+        else:
+            # 如果没有提供掩码，通过图像颜色创建掩码
+            # 识别深灰色边界区域 - 较暗的灰色
+            pixel_mean = torch.mean(target, dim=1, keepdim=True)
+            pixel_std = torch.std(target, dim=1, keepdim=True)
+            
+            is_dark_boundary = torch.logical_and(
+                pixel_mean < 0.5,  # 较暗
+                pixel_std < 0.03  # 颜色均匀
+            ).float()
+            
+            # 创建基础权重掩码: 道路区域高权重，边界区域低权重
+            mask = torch.ones_like(is_dark_boundary) * self.road_weight  # 默认为道路权重
+            mask = torch.where(is_dark_boundary > 0.5, torch.tensor(self.boundary_weight, device=mse.device), mask)
+            
+            # 检测红蓝标记区域(车辆)
+            # 红色: R通道高，G和B通道低
+            is_red = torch.logical_and(
+                target[:, 0] > 0.6,
+                torch.max(target[:, 1:], dim=1)[0] < 0.4
+            ).float().unsqueeze(1)
+            
+            # 蓝色: B通道高，R和G通道低
+            is_blue = torch.logical_and(
+                target[:, 2] > 0.6,
+                torch.max(target[:, :2], dim=1)[0] < 0.4
+            ).float().unsqueeze(1)
+            
+            # 车辆标记区域给予最高权重
+            is_vehicle = torch.logical_or(is_red, is_blue).float()
+            vehicle_mask = is_vehicle * self.vehicle_weight
+            mask = torch.where(vehicle_mask > 0, vehicle_mask, mask)
+        
+        # 应用掩码
+        weighted_mse = mse * mask
+        
+        return weighted_mse.mean()
 
 class DINOEncoder(nn.Module):
     """DINOv2特征编码器"""
@@ -356,11 +468,21 @@ class FeaturePredictor(nn.Module):
         return self.predictor(x)
 
 class BEVPredictionModel(nn.Module):
-    def __init__(self, action_dim, history_steps, hidden_dim, device, mode='feature'):
+    def __init__(self, action_dim, history_steps, hidden_dim, device, mode='feature',
+                road_weight=3.0, vehicle_weight=15.0, boundary_weight=0.01,
+                other_losses_weight=0.05, weight_schedule=None, current_epoch=0):
         super().__init__()
         self.device = device
         self.mode = mode
         self.history_steps = history_steps
+        
+        # 储存权重配置
+        self.road_weight = road_weight
+        self.vehicle_weight = vehicle_weight
+        self.boundary_weight = boundary_weight
+        self.other_losses_weight = other_losses_weight  # 添加对other_losses的权重控制
+        self.weight_schedule = weight_schedule
+        self.current_epoch = current_epoch
         
         # 初始化各个模块
         self.dino_encoder = DINOEncoder(device)
@@ -378,10 +500,40 @@ class BEVPredictionModel(nn.Module):
                 hidden_dims=[256, 128, 64, 32, 16],
                 output_channels=3
             )
-            self.image_loss_fn = CombinedLoss()
+            # 使用自定义的带权重的损失函数，支持渐进式权重调整
+            self.image_loss_fn = WeightedMSELoss(
+                road_weight=self.road_weight,
+                vehicle_weight=self.vehicle_weight,
+                boundary_weight=self.boundary_weight,
+                weight_schedule=self.weight_schedule,
+                current_epoch=self.current_epoch
+            )
+            self.combined_loss_fn = CombinedLoss(alpha=0.5, beta=0.3)
         
         # 初始化优化器
         self.optimizer = AdamW(self.parameters(), lr=1e-4)
+        
+        # 保存注意力图以便可视化
+        self.attention_maps = None
+    
+    def update_epoch(self, epoch):
+        """更新当前epoch，用于渐进式权重调整"""
+        self.current_epoch = epoch
+        if self.mode == 'image':
+            self.image_loss_fn.update_epoch(epoch)
+            
+            # 更新other_losses的权重
+            if self.weight_schedule and epoch in self.weight_schedule:
+                self.other_losses_weight = self.weight_schedule[epoch].get("other_losses", self.other_losses_weight)
+            
+            # 记录当前使用的权重值，便于调试
+            current_weights = {
+                'vehicle': self.image_loss_fn.vehicle_weight,
+                'road': self.image_loss_fn.road_weight,
+                'boundary': self.image_loss_fn.boundary_weight,
+                'other_losses': self.other_losses_weight
+            }
+            print(f"Epoch {epoch}: Using weights {current_weights}")
     
     def forward(self, bev_frames, actions, next_frame):
         """前向传播"""
@@ -422,7 +574,14 @@ class BEVPredictionModel(nn.Module):
             pred_image = self.image_decoder(pred_features)
             return pred_features, target_features, pred_image, next_frame
     
-    def compute_loss(self, pred_features, target_features, pred_image=None, target_image=None):
+    def get_attention_maps(self):
+        """获取模型的注意力图"""
+        # 确保DINOv2模型返回注意力权重
+        if hasattr(self.dino_encoder.model, 'get_last_selfattention'):
+            return self.dino_encoder.model.get_last_selfattention()
+        return None
+    
+    def compute_loss(self, pred_features, target_features, pred_image=None, target_image=None, road_mask=None):
         """计算损失函数"""
         # 特征预测损失
         feature_loss = self.feature_loss_fn(pred_features, target_features)
@@ -430,8 +589,29 @@ class BEVPredictionModel(nn.Module):
         if self.mode == 'feature':
             return feature_loss
         else:
-            # 图像生成损失
-            image_loss = self.image_loss_fn(pred_image, target_image, pred_features, target_features)
-            # 组合损失
-            total_loss = feature_loss + image_loss
+            # 图像生成损失 - 使用自定义的带权重的损失函数
+            weighted_image_loss = self.image_loss_fn(pred_image, target_image, road_mask)
+            
+            # 感知损失和其他损失
+            other_losses = self.combined_loss_fn(pred_image, target_image, pred_features, target_features)
+            
+            # 组合损失 - 使用渐进式other_losses权重
+            total_loss = weighted_image_loss + other_losses * self.other_losses_weight
             return total_loss
+
+    def create_road_mask(self, image):
+        """创建道路掩码，只过滤上下边界的深灰色区域，保留道路部分（包括道路的浅灰色部分）"""
+        # 检测深灰色边界区域 - 较暗且通道间颜色均匀
+        pixel_mean = torch.mean(image, dim=1)  # 计算每个像素三个通道的均值
+        pixel_std = torch.std(image, dim=1)    # 计算每个像素三个通道的标准差
+        
+        # 深灰色边界区域特征: 亮度较低且颜色均匀
+        is_dark_boundary = torch.logical_and(
+            pixel_mean < 0.5,  # 较暗
+            pixel_std < 0.03  # 颜色均匀
+        )
+        
+        # 创建掩码: 非深灰色边界(道路+车辆)为1，深灰色边界为0
+        road_mask = ~is_dark_boundary
+        
+        return road_mask.float()

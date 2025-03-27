@@ -7,9 +7,9 @@ import pygame
 import pickle
 from scipy.interpolate import splprep, splev
 from pathlib import Path
-from vehicle_model import VehicleKinematicsModel
-from Initializer import SimulationInitializer
-from behaviour import StrategyManager
+from LM_env.interaction_model.vehicle_model import VehicleKinematicsModel
+from LM_env.interaction_model.Initializer import SimulationInitializer
+from LM_env.interaction_model.behaviour import StrategyManager
 
 # TODO:仿真器搭建还有以下工作（已完成主体函数框架）：
 # 1、StrategyManager类，现在是简单的策略，需要建模汇入场景的环境，实现基于交互的策略。（重点，难点。考虑数据分布，决策价值观，世界模型的建立和群体收益等）
@@ -46,7 +46,7 @@ class MergeEnv(gym.Env):
         "render_fps": 60,
     }
     
-    def __init__(self, map_path="LM_static_map.pkl", render_mode=None, dt=0.1, 
+    def __init__(self, map_path="LM_map/LM_static_map.pkl", render_mode=None, dt=0.1, 
                  max_episode_steps=500, other_vehicle_strategy='simple'):
         """
         Initialize the merge environment
@@ -253,17 +253,53 @@ class MergeEnv(gym.Env):
             pygame.quit()
             self.screen = None
     
+    import numpy as np
+
     def distrub_env_obs(self):
-        """Get current simulation state for external algorithms"""
-        active_vehicles = {
-            vehicle_id: {
+        """获取当前仿真状态，供外部算法使用，包含周围车辆的相对信息"""
+        active_vehicles = {}
+        distance_threshold = 50.0  # 周围车辆的距离阈值（米）
+
+        # 遍历所有车辆
+        for vid, vehicle in self.vehicles.items():
+            # 基本信息
+            vehicle_info = {
                 'position': vehicle.position.tolist(),
                 'velocity': vehicle.velocity.tolist(),
-                'acceleration': vehicle.acceleration.tolist()
-            } for vehicle_id, vehicle in self.vehicles.items()
-        }
+                'acceleration': vehicle.acceleration.tolist(),
+                'heading': vehicle.heading  # 航向角
+            }
+
+            # 计算周围车辆的相对信息
+            neighbors = []
+            for other_vid, other_vehicle in self.vehicles.items():
+                if vid == other_vid:  # 跳过自身
+                    continue
+                # 计算两车距离
+                distance = np.linalg.norm(vehicle.position - other_vehicle.position)
+                if distance < distance_threshold:
+                    # 相对位置
+                    relative_position = (other_vehicle.position - vehicle.position).tolist()
+                    # 相对速度
+                    relative_velocity = (other_vehicle.velocity - vehicle.velocity).tolist()
+                    # 相对航向角
+                    relative_heading = other_vehicle.heading - vehicle.heading
+                    # 规范化到 [-π, π]
+                    relative_heading = (relative_heading + np.pi) % (2 * np.pi) - np.pi
+
+                    neighbors.append({
+                        'vehicle_id': other_vid,
+                        'relative_position': relative_position,
+                        'relative_velocity': relative_velocity,
+                        'relative_heading': relative_heading
+                    })
+
+            # 添加邻居信息
+            vehicle_info['neighbors'] = neighbors
+            active_vehicles[vid] = vehicle_info
+
+        # 返回仿真状态
         state = {
-            'current_frame': self.current_step,
             'active_vehicles': active_vehicles,
             'reference_line': self.smooth_reference_line.tolist()
         }
@@ -641,7 +677,7 @@ class MergeEnv(gym.Env):
                 np.array(pygame.surfarray.pixels3d(self.screen)), axes=(1, 0, 2)
             )
 
-def make_env(map_path="LM_static_map.pkl", render_mode=None, max_episode_steps=500):
+def make_env(map_path="LM_env/LM_map/LM_static_map.pkl", render_mode=None, max_episode_steps=500):
     """Factory function to create the environment with specified parameters"""
     env = MergeEnv(
         map_path=map_path,

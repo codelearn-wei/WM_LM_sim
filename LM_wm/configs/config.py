@@ -10,20 +10,20 @@ VALIDATION_DATA_DIR = "LM_wm/validation_data"
 MODEL_DIR = "LM_wm/models/checkpoints"
 
 # Training parameters
-BATCH_SIZE = 16
-NUM_EPOCHS = 50
-LEARNING_RATE = 1e-4
-HISTORY_STEPS = 20
-HIDDEN_DIM = 256
-VALIDATION_FREQ = 5
-EARLY_STOPPING_PATIENCE = 5
+# BATCH_SIZE = 16
+# NUM_EPOCHS = 50
+# LEARNING_RATE = 1e-4
+# HISTORY_STEPS = 20
+# HIDDEN_DIM = 256
+# VALIDATION_FREQ = 5
+# EARLY_STOPPING_PATIENCE = 5
 
 # Model parameters
-ACTION_DIM = 30  # 10辆车 × 3个动作值
+# ACTION_DIM = 30  # 10辆车 × 3个动作值
 
 # Data generation parameters
-NUM_WORKERS = 2
-PREFETCH_FACTOR = 2
+# NUM_WORKERS = 2
+# PREFETCH_FACTOR = 2
 
 # GPU settings
 USE_GPU = True
@@ -51,7 +51,7 @@ class Config:
         # 数据相关配置
         self.data_dir = "LM_wm/training_data"
         self.batch_size = 64
-        self.num_workers = 4
+        self.num_workers = 8
         self.history_steps = 10
         self.max_vehicles = 10 ## 定义最大车辆数量
         self.action_num = 3 ## 定义动作的维度
@@ -63,12 +63,59 @@ class Config:
         self.image_size = IMAGE_SIZE
         
         # 训练相关配置
-        self.num_epochs = 40
+        self.num_epochs = 100
         self.learning_rate = 1e-4
         self.weight_decay = 1e-5
-        self.warmup_steps = 1000
+        self.warmup_steps = 500
         self.gradient_clip = 1.0
         self.early_stopping_patience = 5
+        
+        # 添加掩码和区域关注配置
+        self.focus_on_road = True  # 是否强制模型关注道路区域，忽略深灰色边界区域
+        
+        # 渐进式权重调整配置 - 简化版
+        self.use_progressive_weights = True  # 是否使用渐进式权重调整
+        
+        # 1. 权重起始值和终止值
+        self.weights = {
+            # 起始值
+            "initial": {
+                "vehicle": 5.0,      # 车辆区域初始权重 
+                "road": 3.0,         # 道路区域初始权重
+                "boundary": 0.2,     # 边界区域初始权重
+                "other_losses": 0.5  # 其他损失初始权重
+            },
+            # 终止值
+            "final": {
+                "vehicle": 40.0,     # 车辆区域最终权重
+                "road": 10.0,        # 道路区域最终权重
+                "boundary": 0.01,    # 边界区域最终权重
+                "other_losses": 0.05 # 其他损失最终权重
+            }
+        }
+        
+        # 2. 线性变化的起止epoch
+        self.weight_epochs = {
+            "start": 0,  # 开始渐进式调整的epoch
+            "end": 35    # 结束渐进式调整的epoch
+        }
+        
+        # 为保持向后兼容性，设置对应的属性
+        self.initial_vehicle_weight = self.weights["initial"]["vehicle"]
+        self.initial_road_weight = self.weights["initial"]["road"]
+        self.initial_boundary_weight = self.weights["initial"]["boundary"]
+        self.initial_other_losses_weight = self.weights["initial"]["other_losses"]
+        
+        self.final_vehicle_weight = self.weights["final"]["vehicle"]
+        self.final_road_weight = self.weights["final"]["road"]
+        self.final_boundary_weight = self.weights["final"]["boundary"]
+        self.final_other_losses_weight = self.weights["final"]["other_losses"]
+        
+        self.linear_start_epoch = self.weight_epochs["start"]
+        self.linear_end_epoch = self.weight_epochs["end"]
+        
+        # 生成渐进式权重调度字典 (采用线性变化)
+        self.weight_schedule = self._generate_linear_weight_schedule()
         
         # 训练模式配置
         self.train_mode = "feature"  # 可选: "feature" 或 "image"
@@ -100,7 +147,7 @@ class Config:
         self.test_interval = 5
         
         # 可视化配置
-        self.vis_interval = 50
+        self.vis_interval = 10
         self.num_vis_samples = 4
         
         # 数据生成配置
@@ -159,4 +206,51 @@ class Config:
         self.gradient_accumulation = {
             "enabled": True,
             "steps": 4
-        } 
+        }
+    
+    def _generate_linear_weight_schedule(self):
+        """生成线性变化的权重调度字典 - 简化版"""
+        if not self.use_progressive_weights:
+            return {}
+            
+        # 计算渐进式变化的epoch数
+        epochs_count = self.weight_epochs["end"] - self.weight_epochs["start"]
+        if epochs_count <= 0:
+            # 如果起止范围无效，只使用最终权重
+            return {0: self.weights["final"]}
+            
+        # 确保最终epoch不超过训练总轮数
+        end_epoch = min(self.weight_epochs["end"], self.num_epochs - 1)
+        
+        # 创建权重调度字典
+        schedule = {}
+        
+        # 添加起始点
+        schedule[self.weight_epochs["start"]] = self.weights["initial"].copy()
+        
+        # 添加结束点
+        schedule[end_epoch] = self.weights["final"].copy()
+        
+        # 添加中间检查点
+        checkpoint_interval = 10
+        if epochs_count > checkpoint_interval * 2:
+            for epoch in range(self.weight_epochs["start"] + checkpoint_interval, 
+                              end_epoch, checkpoint_interval):
+                # 计算进度比例
+                progress = (epoch - self.weight_epochs["start"]) / epochs_count
+                
+                # 为所有权重参数进行线性插值
+                checkpoint_weights = {}
+                for key in self.weights["initial"].keys():
+                    initial_value = self.weights["initial"][key]
+                    final_value = self.weights["final"][key]
+                    checkpoint_weights[key] = initial_value + progress * (final_value - initial_value)
+                
+                schedule[epoch] = checkpoint_weights
+        
+        # 确保各个权重配置是独立的对象，避免引用问题
+        for epoch in schedule.keys():
+            if isinstance(schedule[epoch], dict):
+                schedule[epoch] = schedule[epoch].copy()
+                
+        return schedule 

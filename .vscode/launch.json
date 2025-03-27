@@ -47,6 +47,23 @@
                 "--generate_data"
             ]
         },
+        {
+            "name": "Python: 仅生成数据",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/LM_wm/main.py",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+            "args": [
+                "--mode",
+                "predict",
+                "--checkpoint",
+                "LM_wm/checkpoints/best_model.pth"
+            ]
+        },
    
     ]
 }

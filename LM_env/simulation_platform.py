@@ -4,9 +4,9 @@ import pygame
 import numpy as np
 import pickle
 from scipy.interpolate import splprep, splev
-from vehicle_model import VehicleKinematicsModel
-from Initializer import SimulationInitializer
-from behaviour import StrategyManager
+from LM_env.interaction_model.vehicle_model import VehicleKinematicsModel
+from LM_env.interaction_model.Initializer import SimulationInitializer
+from LM_env.interaction_model.behaviour import StrategyManager
 import time
 
 # TODO:仿真器搭建还有以下工作（已完成主体函数框架）：
@@ -155,15 +155,51 @@ class Simulator:
         
         
     # TODO ：策略函数调用这里获取的状态，用于计算环境中车辆的动作
+
     def distrub_env_obs(self):
-        """获取当前仿真状态，供外部算法使用"""
-        active_vehicles = {
-            vehicle_id: {
+        """获取当前仿真状态，供外部算法使用，包含周围车辆的相对信息"""
+        active_vehicles = {}
+        distance_threshold = 50.0  # 周围车辆的距离阈值（米）
+
+        # 遍历所有车辆
+        for vid, vehicle in self.vehicles.items():
+            # 基本信息
+            vehicle_info = {
                 'position': vehicle.position.tolist(),
                 'velocity': vehicle.velocity.tolist(),
-                'acceleration': vehicle.acceleration.tolist()
-            } for vehicle_id, vehicle in self.vehicles.items()
-        }
+                'acceleration': vehicle.acceleration.tolist(),
+                'heading': vehicle.heading  # 航向角
+            }
+
+            # 计算周围车辆的相对信息
+            neighbors = []
+            for other_vid, other_vehicle in self.vehicles.items():
+                if vid == other_vid:  # 跳过自身
+                    continue
+                # 计算两车距离
+                distance = np.linalg.norm(vehicle.position - other_vehicle.position)
+                if distance < distance_threshold:
+                    # 相对位置
+                    relative_position = (other_vehicle.position - vehicle.position).tolist()
+                    # 相对速度
+                    relative_velocity = (other_vehicle.velocity - vehicle.velocity).tolist()
+                    # 相对航向角
+                    relative_heading = other_vehicle.heading - vehicle.heading
+                    # 规范化到 [-π, π]
+                    relative_heading = (relative_heading + np.pi) % (2 * np.pi) - np.pi
+
+                    neighbors.append({
+                        'vehicle_id': other_vid,
+                        'relative_position': relative_position,
+                        'relative_velocity': relative_velocity,
+                        'relative_heading': relative_heading
+                    })
+
+            # 添加邻居信息
+            vehicle_info['neighbors'] = neighbors
+            active_vehicles[vid] = vehicle_info
+
+        # 返回仿真状态
         state = {
             'current_frame': self.current_simulation_frame,
             'active_vehicles': active_vehicles,
@@ -494,7 +530,7 @@ def main():
     """测试仿真器功能"""
     print("正在加载地图数据...")
     try:
-        file_path = "LM_static_map.pkl"
+        file_path = "LM_env/LM_map/LM_static_map.pkl"
         with open(file_path, 'rb') as file:
             static_map = pickle.load(file)
         print(f"成功加载地图数据: {file_path}")
@@ -504,7 +540,7 @@ def main():
 
     # 1、 主车生成策略函数
     strategy_manager = StrategyManager()
-    strategy_func = strategy_manager.get_strategy('simple')  # 获取简单的策略
+    strategy_func = strategy_manager.get_strategy('interactive')  # 获取简单的策略
 
     
     # 2、 创建仿真器

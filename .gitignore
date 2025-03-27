@@ -18,7 +18,7 @@ LM_wm/models/checkpoints
 test_outputs
 LM_wm/checkpoints
 LM_wm/logs
-LM_wm/test/test_outputs
+LM_wm/test/results
 
 # 忽略所有 __pycache__ 目录
 __pycache__/

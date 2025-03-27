@@ -9,7 +9,7 @@ def test_image_processing():
     测试图像处理效果
     """
     # 创建输出目录
-    output_dir = Path("LM_wm/test/test_outputs")
+    output_dir = Path("LM_wm/test/results")
     output_dir.mkdir(exist_ok=True)
     
     # 加载数据集

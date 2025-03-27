@@ -7,16 +7,18 @@ from LM_wm.configs.config import IMAGE_SIZE
 from LM_wm.utils.image_utils import maintain_aspect_ratio_resize
 
 class LMTrainingDataset(Dataset):
-    def __init__(self, data_dir: str, history_steps: int = 20):
+    def __init__(self, data_dir: str, history_steps: int = 20, focus_on_road: bool = True):
         """
         初始化训练数据集
 
         Args:
             data_dir (str): 数据目录路径
             history_steps (int, optional): 历史步长. 默认为 20.
+            focus_on_road (bool, optional): 是否强制模型关注道路区域. 默认为 True.
         """
         self.data_dir = Path(data_dir)
         self.history_steps = history_steps
+        self.focus_on_road = focus_on_road
         self.sequences = self._build_sequences()
         
     def _build_sequences(self):
@@ -70,7 +72,67 @@ class LMTrainingDataset(Dataset):
             raise ValueError(f"图像维度不正确: {img.shape}")
         # 直接转换为tensor并归一化，确保维度为(C, H, W)
         img = torch.from_numpy(img).float().permute(2, 0, 1) / 255.0
-        return img    
+        return img
+    
+    def _create_road_mask(self, img):
+        """
+        创建道路掩码，仅识别上下边界的深灰色区域(背景)，保留道路区域(包括道路的浅灰色部分)
+        
+        Args:
+            img (torch.Tensor): 图像张量，形状为 [C, H, W]
+            
+        Returns:
+            torch.Tensor: 掩码张量，形状为 [H, W]，道路区域为1，深灰色边界背景为0
+        """
+        # 将图像转为 [H, W, C] 用于处理
+        img_np = img.permute(1, 2, 0).cpu().numpy()
+        
+        # 根据颜色识别区域
+        # 道路区域: 较亮的灰色，一般亮度值在0.55-0.75之间（归一化后）
+        # 深灰色边界: 较暗的灰色，一般亮度值在0.4-0.5之间（归一化后）
+        # 车辆标记: 鲜明的红色和蓝色
+        
+        # 计算像素亮度
+        pixel_mean = np.mean(img_np, axis=2)  # 计算每个像素三个通道的均值
+        
+        # 识别深灰色边界区域 - 亮度较低且颜色均匀
+        is_dark_gray = np.logical_and(
+            pixel_mean < 0.5,  # 深灰色区域较暗
+            np.std(img_np, axis=2) < 0.03  # 颜色非常均匀
+        )
+        
+        # 创建掩码: 非深灰色边界(道路+车辆)为1，深灰色边界为0
+        road_mask = ~is_dark_gray
+        
+        return torch.from_numpy(road_mask).float()
+    
+    def _apply_focus_mask(self, img):
+        """
+        应用专注掩码，强制模型只忽略上下深灰色边界区域
+        
+        Args:
+            img (torch.Tensor): 图像张量，形状为 [C, H, W]
+            
+        Returns:
+            torch.Tensor: 处理后的图像张量，形状为 [C, H, W]
+        """
+        if not self.focus_on_road:
+            return img
+            
+        # 创建道路掩码 - 只识别深灰色边界区域
+        road_mask = self._create_road_mask(img)
+        
+        # 创建随机噪声，用于替换深灰色边界区域
+        # 使用较小的噪声范围，使模型能够轻松识别这是不重要的区域
+        noise = torch.rand_like(img) * 0.05 + 0.48  # 0.48-0.53的随机噪声
+        
+        # 应用掩码: 保留道路区域，深灰色边界区域替换为随机噪声
+        masked_img = img.clone()
+        for c in range(3):  # 对每个通道应用掩码
+            masked_img[c] = img[c] * road_mask + noise[c] * (1 - road_mask)
+        
+        return masked_img
+    
     def __len__(self):
         """返回数据集大小"""
         return len(self.sequences)
@@ -82,10 +144,13 @@ class LMTrainingDataset(Dataset):
         # 读取并处理BEV图像序列
         bev_frames = []
         for frame_path in seq['frames'][:-1]:  # 不包括最后一帧
-            bev_frames.append(self._process_image(frame_path))
+            img = self._process_image(frame_path)
+            # 对历史帧应用专注掩码
+            img = self._apply_focus_mask(img)
+            bev_frames.append(img)
         bev_frames = torch.stack(bev_frames)
         
-        # 读取下一帧
+        # 读取下一帧 - 不应用掩码，因为这是目标
         next_frame = self._process_image(seq['frames'][-1])
         
         # 处理动作序列
@@ -95,8 +160,12 @@ class LMTrainingDataset(Dataset):
             actions.append(action_tensor)
         actions = torch.stack(actions)
         
+        # 添加道路掩码用于训练
+        road_mask = self._create_road_mask(next_frame)
+        
         return {
             'bev_frames': bev_frames,
             'actions': actions,
-            'next_frame': next_frame
+            'next_frame': next_frame,
+            'road_mask': road_mask
         }
