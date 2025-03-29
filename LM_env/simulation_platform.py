@@ -4,9 +4,9 @@ import pygame
 import numpy as np
 import pickle
 from scipy.interpolate import splprep, splev
-from LM_env.interaction_model.vehicle_model import VehicleKinematicsModel
+from LM_env.interaction_model.vehicle_model import VehicleKinematicsModel , Vehicle
 from LM_env.interaction_model.Initializer import SimulationInitializer
-from LM_env.interaction_model.behaviour import StrategyManager
+from LM_env.interaction_model.strategy import StrategyManager
 import time
 
 # TODO:仿真器搭建还有以下工作（已完成主体函数框架）：
@@ -24,15 +24,6 @@ WINDOW_HEIGHT = 200
 ROAD_COLOR = (180, 180, 180)      # 道路颜色：浅灰色
 BOUNDARY_COLOR = (255, 255, 255)  # 边界颜色：白色
 BACKGROUND_COLOR = (30, 30, 30)   # 背景颜色：深灰色
-
-class Vehicle:
-    def __init__(self, position, velocity, heading, length, width):
-        self.position = np.array(position, dtype=float)  # 车辆中心位置 [x, y]
-        self.velocity = np.array(velocity, dtype=float)  # 速度 [vx, vy]
-        self.acceleration = np.array([0.0, 0.0], dtype=float)  # 加速度 [ax, ay]
-        self.heading = heading  # 航向角（弧度）
-        self.length = length  # 车辆长度
-        self.width = width  # 车辆宽度
 
 class Simulator:
     """仿真器类，用于管理仿真环境"""
@@ -106,31 +97,42 @@ class Simulator:
         self.current_simulation_frame = 0
         
         # 添加主车(ego vehicle)
-        ego_id = self.next_vehicle_id
-        self.vehicles[ego_id] = Vehicle(
-            ego_init_state['position'],
-            ego_init_state['velocity'],
-            ego_init_state['heading'],
-            ego_init_state['length'],
-            ego_init_state['width']
-        )
-        # 标记主车ID
-        self.ego_vehicle_id = ego_id
-        self.next_vehicle_id += 1
+        if ego_init_state:
+            ego_id = self.next_vehicle_id
+            self.vehicles[ego_id] = Vehicle(
+                ego_init_state.position,
+                ego_init_state.velocity,
+                ego_init_state.heading,
+                ego_init_state.length,
+                ego_init_state.width,
+            )
+            # 标记主车ID
+            self.ego_vehicle_id = ego_id
+            self.next_vehicle_id += 1
         
         # 添加环境车辆
         if env_vehicles_init_states:
             for env_vehicle_state in env_vehicles_init_states:
                 env_id = self.next_vehicle_id
                 self.vehicles[env_id] = Vehicle(
-                    env_vehicle_state['position'],
-                    env_vehicle_state['velocity'],
-                    env_vehicle_state['heading'],
-                    env_vehicle_state['length'],
-                    env_vehicle_state['width']
+                        env_vehicle_state.position,
+                        env_vehicle_state.velocity,
+                        env_vehicle_state.heading,
+                        env_vehicle_state.length,
+                        env_vehicle_state.width,
                 )
                 self.next_vehicle_id += 1
         
+    def delete_vehicle(self):
+        """如果车辆已经到达终点，删除该车辆"""
+        to_delete = []  # 用于存储需要删除的车辆键
+        # 遍历字典，找出满足条件的车辆
+        for vid, vehicle in self.vehicles.items():
+            if vehicle.position[0] < 1030:  # 判断条件
+                to_delete.append(vid)  # 将满足条件的车辆键添加到列表
+        # 根据收集的键逐个删除
+        for vid in to_delete:
+            del self.vehicles[vid]  # 从字典中删除对应的车辆
     
     def step(self):
         obs = self.distrub_env_obs()
@@ -145,8 +147,8 @@ class Simulator:
                 
                 # 使用运动学模型更新车辆状态
                 self.vehicle_model.update(vehicle, acceleration, steering_angle, self.dt)
-        
         # 更新仿真帧
+        self.delete_vehicle()
         self.current_frame += 1
         self.current_simulation_frame += 1
         env_status = self.check_environment_status()
@@ -179,20 +181,35 @@ class Simulator:
                 # 计算两车距离
                 distance = np.linalg.norm(vehicle.position - other_vehicle.position)
                 if distance < distance_threshold:
+                    # 绝对位置
+                    position = other_vehicle.position.tolist()
                     # 相对位置
                     relative_position = (other_vehicle.position - vehicle.position).tolist()
+                    # 绝对速度
+                    velocity = other_vehicle.velocity.tolist()                 
                     # 相对速度
-                    relative_velocity = (other_vehicle.velocity - vehicle.velocity).tolist()
+                    relative_velocity = (other_vehicle.velocity - vehicle.velocity).tolist()                  
+                    # 绝对航向角
+                    heading = other_vehicle.heading
                     # 相对航向角
                     relative_heading = other_vehicle.heading - vehicle.heading
                     # 规范化到 [-π, π]
                     relative_heading = (relative_heading + np.pi) % (2 * np.pi) - np.pi
+                    # 车长
+                    length = other_vehicle.length
+                    # 车宽
+                    width = other_vehicle.width
 
                     neighbors.append({
                         'vehicle_id': other_vid,
+                        'position': position,
+                        'heading': heading,
+                        'velocity': velocity,
                         'relative_position': relative_position,
                         'relative_velocity': relative_velocity,
-                        'relative_heading': relative_heading
+                        'relative_heading': relative_heading,
+                        'length': length,
+                        'withd': width
                     })
 
             # 添加邻居信息
@@ -209,7 +226,7 @@ class Simulator:
     
     # 仿真平台的可视化绘制
     def draw(self):
-        """绘制地图和动态元素，区分主车和环境车辆"""
+        """绘制地图和动态元素，区分主车和环境车辆，并显示车辆ID"""
         # 绘制背景和道路
         self.screen.fill(BACKGROUND_COLOR)
         pygame.draw.polygon(self.screen, ROAD_COLOR, self.road_pixel_points)
@@ -265,7 +282,7 @@ class Simulator:
                 # 主车用蓝色表示
                 color = (0, 0, 255)  # 蓝色
             else:
-                # 环境车辆用红色表示
+                # 环境车辆用绿色表示
                 color = (0, 255, 0)  # 绿色
 
             # 绘制车辆多边形
@@ -280,6 +297,18 @@ class Simulator:
                 pygame.draw.line(self.screen, (255, 255, 0), 
                             self.map_to_pixel(front_center[0], front_center[1]),
                             self.map_to_pixel(direction_end[0], direction_end[1]), 2)
+
+            # 在车辆上绘制ID文本
+            # 选择在车辆顶部或中心绘制ID
+            text_color = (255, 255, 255)  # 白色文字
+            text_surface = self.font.render(str(vid), True, text_color)
+            
+            # 计算文字绘制位置（车辆中心）
+            text_center_x, text_center_y = np.mean(pixel_points, axis=0)
+            text_rect = text_surface.get_rect(center=(text_center_x, text_center_y))
+            
+            # 绘制文字
+            self.screen.blit(text_surface, text_rect)
 
         # 绘制信息文字
         info_text = f"Frame: {self.current_simulation_frame} | Active Vehicles: {len(self.vehicles)} | Speed: {self.simulation_speed}x"
@@ -547,8 +576,26 @@ def main():
     simulator = Simulator(static_map[0], strategy_func, dt=0.1, real_time_mode=True)
     
     # 3、 创建仿真器初始化函数
+    ego_config = {
+    "position_index": 0,
+    "velocity": 1.0,
+    "length": 5.0,
+    "width": 2.0,
+    "attributes": {}
+    }
+    
+    env_vehicles_configs = {
+        "num_vehicles": 5,
+        "position_range": [100, 900],
+        "velocity_range": [2.0, 5.0],
+        "length_range": [4.0, 5.5],
+        "width_range": [1.8, 2.2],
+        "attributes": {}
+    }
     initializer = SimulationInitializer(static_map[0])
-    ego_init_state, env_vehicles_init_states = initializer.get_simulation_init_states()
+    # 加载初始化配置文件
+    
+    ego_init_state, env_vehicles_init_states = initializer.get_simulation_init_states(ego_config,env_vehicles_configs)
     simulator.reset(ego_init_state, env_vehicles_init_states)
       
     # 4、 启动仿真

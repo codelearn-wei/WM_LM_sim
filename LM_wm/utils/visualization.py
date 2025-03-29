@@ -4,43 +4,51 @@ import matplotlib.pyplot as plt
 import cv2
 import matplotlib.cm as cm
 from pylab import mpl
+import datetime
 # 设置显示中文字体
 mpl.rcParams["font.sans-serif"] = ["SimHei"]
-def visualize_predictions(pred_images, target_images, max_samples=4):
+def visualize_predictions(pred_images, target_images, save_path=None):
     """
-    可视化预测结果和目标图像
-
+    可视化预测结果和目标图像的对比
+    
     Args:
         pred_images (torch.Tensor): 预测图像 [B, C, H, W]
         target_images (torch.Tensor): 目标图像 [B, C, H, W]
-        max_samples (int): 最大可视化样本数
-
+        save_path (str, optional): 保存路径
+    
     Returns:
-        plt.Figure: Matplotlib figure
+        matplotlib.figure.Figure: 可视化图像
     """
-    batch_size = min(pred_images.shape[0], max_samples)
-    fig, axes = plt.subplots(batch_size, 2, figsize=(10, 3 * batch_size))
+    # 确保输入是4D张量
+    if len(pred_images.shape) == 3:
+        pred_images = pred_images.unsqueeze(0)
+    if len(target_images.shape) == 3:
+        target_images = target_images.unsqueeze(0)
     
-    # 单样本情况
-    if batch_size == 1:
-        axes = axes.reshape(1, 2)
+    # 计算要显示的样本数量
+    num_samples = min(4, pred_images.size(0))
     
-    for i in range(batch_size):
+    # 创建图像网格
+    fig = plt.figure(figsize=(15, 5))
+    
+    for i in range(num_samples):
         # 预测图像
-        pred = pred_images[i].permute(1, 2, 0).cpu().detach().numpy()
-        pred = np.clip(pred, 0, 1)
-        axes[i, 0].imshow(pred)
-        axes[i, 0].set_title('Predicted')
-        axes[i, 0].axis('off')
-        
-        # 目标图像
-        target = target_images[i].permute(1, 2, 0).cpu().detach().numpy()
-        target = np.clip(target, 0, 1)
-        axes[i, 1].imshow(target)
-        axes[i, 1].set_title('Target')
-        axes[i, 1].axis('off')
+        plt.subplot(1, num_samples, i + 1)
+        plt.imshow(pred_images[i].cpu().permute(1, 2, 0))
+        plt.title(f'Prediction {i+1}')
+        plt.axis('off')
     
+    # 添加时间戳和批次信息
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    plt.suptitle(f'Validation Results - {timestamp}', fontsize=12)
+    
+    # 调整布局
     plt.tight_layout()
+    
+    # 如果提供了保存路径，保存图像
+    if save_path:
+        plt.savefig(save_path)
+    
     return fig
 
 def visualize_attention_maps(image, attention_map, save_path=None):
@@ -104,84 +112,77 @@ def visualize_attention_maps(image, attention_map, save_path=None):
 
 def visualize_weighted_regions(image, save_path=None):
     """
-    可视化图像中的加权区域，突出显示道路和车辆标记
-
+    可视化不同区域的权重分布
+    
     Args:
-        image (torch.Tensor): 输入图像 [B, C, H, W] 或 [C, H, W]
-        save_path (str): 保存路径，如果为None则显示
+        image (torch.Tensor): 输入图像 [B, C, H, W]
+        save_path (str, optional): 保存路径
+    
+    Returns:
+        matplotlib.figure.Figure: 可视化图像
     """
-    # 确保输入是合适的维度
-    if image.dim() == 4:
-        image = image[0]  # 取第一个样本
-        
-    # 转换到numpy
-    if isinstance(image, torch.Tensor):
-        image_np = image.permute(1, 2, 0).cpu().detach().numpy()
-        image_np = np.clip(image_np, 0, 1)
-    else:
-        image_np = image.copy()
+    # 确保输入是4D张量
+    if len(image.shape) == 3:
+        image = image.unsqueeze(0)
     
-    # 创建掩码
-    # 检测深灰色边界区域
-    pixel_mean = np.mean(image_np, axis=2)  # 计算每个像素三个通道的均值
-    pixel_std = np.std(image_np, axis=2)    # 计算每个像素三个通道的标准差
+    # 创建图像网格
+    fig = plt.figure(figsize=(15, 5))
     
-    # 深灰色边界区域特征: 亮度较低且颜色均匀
-    is_dark_boundary = np.logical_and(
-        pixel_mean < 0.5,  # 较暗
-        pixel_std < 0.03  # 颜色均匀
+    # 显示原始图像
+    plt.subplot(1, 3, 1)
+    plt.imshow(image[0].cpu().permute(1, 2, 0))
+    plt.title('Original Image')
+    plt.axis('off')
+    
+    # 计算像素均值和标准差
+    pixel_mean = torch.mean(image[0], dim=0)
+    pixel_std = torch.std(image[0], dim=0)
+    
+    # 创建道路掩码
+    road_mask = torch.logical_and(
+        pixel_mean > 0.5,  # 较亮
+        pixel_std > 0.03  # 颜色不均匀
     )
     
-    # 检测红色和蓝色区域(车辆标记)
-    # 红色: R通道高，G和B通道低
-    is_red = np.logical_and(
-        image_np[:, :, 0] > 0.6,
-        np.max(image_np[:, :, 1:], axis=2) < 0.4
+    # 创建车辆掩码（红色和蓝色区域）
+    is_red = torch.logical_and(
+        image[0, 0] > 0.6,  # 红色通道高
+        torch.max(image[0, 1:], dim=0)[0] < 0.4  # 绿色和蓝色通道低
     )
     
-    # 蓝色: B通道高，R和G通道低
-    is_blue = np.logical_and(
-        image_np[:, :, 2] > 0.6,
-        np.max(image_np[:, :, :2], axis=2) < 0.4
+    is_blue = torch.logical_and(
+        image[0, 2] > 0.6,  # 蓝色通道高
+        torch.max(image[0, :2], dim=0)[0] < 0.4  # 红色和绿色通道低
     )
     
-    # 合并掩码
-    vehicle_mask = np.logical_or(is_red, is_blue)
-    road_mask = ~is_dark_boundary
+    vehicle_mask = torch.logical_or(is_red, is_blue)
     
-    # 创建权重热图
-    weight_map = np.zeros_like(is_dark_boundary, dtype=float)
-    weight_map[is_dark_boundary] = 0.01  # 深灰色边界区域
-    weight_map[np.logical_and(road_mask, ~vehicle_mask)] = 3.0  # 道路区域（不包括车辆）
-    weight_map[vehicle_mask] = 15.0  # 车辆标记区域
+    # 显示道路区域
+    plt.subplot(1, 3, 2)
+    road_vis = image[0].cpu().permute(1, 2, 0).numpy()
+    road_vis[~road_mask.cpu()] = 0
+    plt.imshow(road_vis)
+    plt.title('Road Regions')
+    plt.axis('off')
     
-    # 可视化
-    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+    # 显示车辆区域
+    plt.subplot(1, 3, 3)
+    vehicle_vis = image[0].cpu().permute(1, 2, 0).numpy()
+    vehicle_vis[~vehicle_mask.cpu()] = 0
+    plt.imshow(vehicle_vis)
+    plt.title('Vehicle Regions')
+    plt.axis('off')
     
-    axes[0, 0].imshow(image_np)
-    axes[0, 0].set_title('Original Image')
-    axes[0, 0].axis('off')
+    # 添加时间戳
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    plt.suptitle(f'Weighted Regions Visualization - {timestamp}', fontsize=12)
     
-    axes[0, 1].imshow(is_dark_boundary, cmap='gray')
-    axes[0, 1].set_title('Dark Boundary Mask')
-    axes[0, 1].axis('off')
-    
-    axes[1, 0].imshow(vehicle_mask, cmap='gray')
-    axes[1, 0].set_title('Vehicle Markings Mask')
-    axes[1, 0].axis('off')
-    
-    # 使用更明显的颜色图显示权重
-    axes[1, 1].imshow(weight_map, cmap='viridis')
-    axes[1, 1].set_title('Weight Map (Yellow=Higher)')
-    axes[1, 1].axis('off')
-    
+    # 调整布局
     plt.tight_layout()
     
+    # 如果提供了保存路径，保存图像
     if save_path:
         plt.savefig(save_path)
-        plt.close()
-    else:
-        plt.show()
     
     return fig
 

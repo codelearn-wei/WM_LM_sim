@@ -52,18 +52,18 @@ class Config:
         self.data_dir = "LM_wm/training_data"
         self.batch_size = 64
         self.num_workers = 8
-        self.history_steps = 10
+        self.history_steps = 5
         self.max_vehicles = 10 ## 定义最大车辆数量
         self.action_num = 3 ## 定义动作的维度
         self.action_dim = self.max_vehicles * self.action_num ## 定义动作的维度
         
         # 模型相关配置
-        self.hidden_dim = 256
+        self.hidden_dim = 1024
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.image_size = IMAGE_SIZE
         
         # 训练相关配置
-        self.num_epochs = 100
+        self.num_epochs = 200
         self.learning_rate = 1e-4
         self.weight_decay = 1e-5
         self.warmup_steps = 500
@@ -80,24 +80,24 @@ class Config:
         self.weights = {
             # 起始值
             "initial": {
-                "vehicle": 5.0,      # 车辆区域初始权重 
-                "road": 3.0,         # 道路区域初始权重
-                "boundary": 0.2,     # 边界区域初始权重
+                "vehicle": 1,      # 车辆区域初始权重 
+                "road": 1,         # 道路区域初始权重
+                "boundary": 0.05,     # 边界区域初始权重
                 "other_losses": 0.5  # 其他损失初始权重
             },
             # 终止值
             "final": {
-                "vehicle": 40.0,     # 车辆区域最终权重
-                "road": 10.0,        # 道路区域最终权重
-                "boundary": 0.01,    # 边界区域最终权重
-                "other_losses": 0.05 # 其他损失最终权重
+                "vehicle": 2,     # 车辆区域最终权重
+                "road": 2,        # 道路区域最终权重
+                "boundary": 0.001,    # 边界区域最终权重
+                "other_losses": 0.6 # 其他损失最终权重
             }
         }
         
         # 2. 线性变化的起止epoch
         self.weight_epochs = {
             "start": 0,  # 开始渐进式调整的epoch
-            "end": 35    # 结束渐进式调整的epoch
+            "end": 3    # 结束渐进式调整的epoch
         }
         
         # 为保持向后兼容性，设置对应的属性
@@ -139,7 +139,7 @@ class Config:
         self.save_interval = 5
         
         # 验证配置
-        self.val_interval = 1
+        self.val_interval = 5
         self.val_batch_size = 16
         
         # 测试配置
@@ -147,7 +147,7 @@ class Config:
         self.test_interval = 5
         
         # 可视化配置
-        self.vis_interval = 10
+        self.vis_interval = 5
         self.num_vis_samples = 4
         
         # 数据生成配置

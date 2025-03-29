@@ -286,27 +286,48 @@ class WeightedMSELoss(nn.Module):
         if self.weight_schedule is None:
             return
             
-        # 查找当前epoch应使用的权重
-        current_weights = None
-        epochs = sorted(self.weight_schedule.keys())
+        # 获取初始和最终权重
+        initial_weights = self.weight_schedule.get(0, {
+            "vehicle": self.vehicle_weight,
+            "road": self.road_weight,
+            "boundary": self.boundary_weight
+        })
         
-        for epoch in epochs:
-            if self.current_epoch >= epoch:
-                current_weights = self.weight_schedule[epoch]
-            else:
-                break
-                
-        if current_weights:
-            self.vehicle_weight = current_weights.get("vehicle", self.vehicle_weight)
-            self.road_weight = current_weights.get("road", self.road_weight)
-            self.boundary_weight = current_weights.get("boundary", self.boundary_weight)
+        final_weights = self.weight_schedule.get(max(self.weight_schedule.keys()), {
+            "vehicle": self.vehicle_weight,
+            "road": self.road_weight,
+            "boundary": self.boundary_weight
+        })
+        
+        # 计算当前epoch的进度
+        max_epoch = max(self.weight_schedule.keys())
+        progress = min(1.0, self.current_epoch / max_epoch)
+        
+        # 线性插值计算当前权重
+        self.vehicle_weight = initial_weights["vehicle"] + (final_weights["vehicle"] - initial_weights["vehicle"]) * progress
+        self.road_weight = initial_weights["road"] + (final_weights["road"] - initial_weights["road"]) * progress
+        self.boundary_weight = initial_weights["boundary"] + (final_weights["boundary"] - initial_weights["boundary"]) * progress
     
     def update_epoch(self, epoch):
         """更新当前epoch并相应地调整权重"""
         self.current_epoch = epoch
         self._update_weights()
         
+        # 打印当前权重值，用于调试
+        print(f"Epoch {epoch} - Current weights: vehicle={self.vehicle_weight:.2f}, "
+              f"road={self.road_weight:.2f}, boundary={self.boundary_weight:.2f}")
+    
     def forward(self, pred, target, road_mask=None):
+        """计算加权MSE损失
+        
+        Args:
+            pred (torch.Tensor): 预测图像 [B, C, H, W]
+            target (torch.Tensor): 目标图像 [B, C, H, W]
+            road_mask (torch.Tensor, optional): 道路掩码 [B, H, W]
+            
+        Returns:
+            torch.Tensor: 加权MSE损失
+        """
         # 计算像素级MSE
         mse = (pred - target) ** 2
         
@@ -356,14 +377,14 @@ class WeightedMSELoss(nn.Module):
             # 检测红蓝标记区域(车辆)
             # 红色: R通道高，G和B通道低
             is_red = torch.logical_and(
-                target[:, 0] > 0.6,
-                torch.max(target[:, 1:], dim=1)[0] < 0.4
+                target[:, 0] > 0.6,  # 红色通道高
+                torch.max(target[:, 1:], dim=1)[0] < 0.4  # 绿色和蓝色通道低
             ).float().unsqueeze(1)
             
             # 蓝色: B通道高，R和G通道低
             is_blue = torch.logical_and(
-                target[:, 2] > 0.6,
-                torch.max(target[:, :2], dim=1)[0] < 0.4
+                target[:, 2] > 0.6,  # 蓝色通道高
+                torch.max(target[:, :2], dim=1)[0] < 0.4  # 红色和绿色通道低
             ).float().unsqueeze(1)
             
             # 车辆标记区域给予最高权重
@@ -486,9 +507,9 @@ class BEVPredictionModel(nn.Module):
         
         # 初始化各个模块
         self.dino_encoder = DINOEncoder(device)
-        self.feature_encoder = FeatureEncoder(768, hidden_dim)
-        self.action_encoder = ActionEncoder(30, hidden_dim)
-        self.feature_predictor = FeaturePredictor(768 + hidden_dim, hidden_dim, 768)
+        self.feature_encoder = FeatureEncoder(768, hidden_dim)## MLP
+        self.action_encoder = ActionEncoder(30, hidden_dim)## MLP
+        self.feature_predictor = FeaturePredictor(768 + hidden_dim, hidden_dim, 768)## MLP可以考虑改成上面的LSTM
         
         # 特征损失函数
         self.feature_loss_fn = nn.MSELoss()
@@ -558,7 +579,7 @@ class BEVPredictionModel(nn.Module):
         action_encodings = self.action_encoder(actions_flat)
         action_encodings = action_encodings.reshape(batch_size, seq_len, -1)
         
-        # 连接特征
+        # 连接特征————没有使用LSTM，feature_predictor可以考虑改成LSTM
         combined_features = torch.cat([history_encodings[:, -1], action_encodings[:, -1]], dim=-1)
         
         # 预测下一帧特征

@@ -1,5 +1,6 @@
 import numpy as np
-from interaction_model.decision_make import detect_related_aux_vehicles, follow_leader, should_yield, yield_to_aux, accelerate_past_aux
+from interaction_model.obs_behavior.decision_make import *
+from interaction_model.obs_behavior.follower import idm_follow_leader
 
 class StrategyManager:
     """
@@ -104,28 +105,34 @@ class StrategyManager:
             #! 先考虑纵向决策，横向先跟踪参考轨迹，后续探究横向对让行策略的影响
             
             if vehicle_id != 0:  # 环境车辆
-                # 感知层：检测辅道车辆
-                neighbors = vehicle_state.get('neighbors', [])
-                aux_vehicles = detect_related_aux_vehicles(neighbors, simulator_state)
-                
+                # 其中0是主车，其他id是主道车辆          
+                # 获得相对本车的车辆列表
+                # 字典，包含四个键 ('辅道靠前', '辅道靠后', '主道靠前', '主道靠后')，每个键映射到一个车辆列表。
+                neighbors_vehicle_categories = categorize_vehicles(vehicle_state, reference_line)
+                aux_vehicles = neighbors_vehicle_categories['辅道靠前'] + neighbors_vehicle_categories['辅道靠后']
+                if aux_vehicles == []:
+                    # 没有辅道车辆，主道中的前车（先用简单的IDM，后面考虑决策个性化）
+                    acceleration = idm_follow_leader(vehicle_state, neighbors_vehicle_categories)
+                           
                 # 决策层
-                if not aux_vehicles:
-                    # 没有影响，跟随前车
-                    acceleration = follow_leader(vehicle_state, simulator_state)
-                else:
-                    # 有影响，触发决策逻辑
-                    if should_yield(aux_vehicles, vehicle_state):
-                        # 让车逻辑
-                        acceleration = yield_to_aux(aux_vehicles, vehicle_state)
-                    else:
-                        # 不让车，加速逻辑
-                        acceleration = accelerate_past_aux(aux_vehicles, vehicle_state)
+                # if not aux_vehicles:
+                #     # 没有影响，跟随前车
+                #     acceleration = follow_leader(vehicle_state, simulator_state)
+                # else:
+                #     # 有影响，触发决策逻辑
+                #     if should_yield(aux_vehicles, vehicle_state):
+                #         # 让车逻辑
+                #         acceleration = yield_to_aux(aux_vehicles, vehicle_state)
+                #     else:
+                #         # 不让车，加速逻辑
+                #         acceleration = accelerate_past_aux(aux_vehicles, vehicle_state)
                 
-                actions[vehicle_id] = [acceleration, steering_angle]
+                    actions[vehicle_id] = [acceleration, steering_angle]
             
-            else:  # 主车
-                desired_speed = 3.0 + (vehicle_id % 3)
-                acceleration = np.clip((desired_speed - speed) * 0.3, -1.0, 1.0)
-                actions[vehicle_id] = [acceleration, steering_angle]
+            # TODO：主车暂时不提供策略，由强化学习外部输入（后续可以用这个接口测试搭建建立交互模型）
+            # else:  # 主车,强化学习或其他算法控制车辆
+            #     desired_speed = 3.0 + (vehicle_id % 3)
+            #     acceleration = np.clip((desired_speed - speed) * 0.3, -1.0, 1.0)
+            #     actions[vehicle_id] = [acceleration, steering_angle]
         
         return actions

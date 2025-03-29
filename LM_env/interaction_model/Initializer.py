@@ -1,17 +1,21 @@
-import numpy as np
+# import numpy as np
 
-# 维护主道车辆初始化策略
-# TODO：基于数据采样生成主道车辆初始状态
-# !需要方便调节以获得不同的训练状态，参数可调，符合自然驾驶数据分布，有方便的参数调节接口。
+# # 维护主道车辆初始化策略
+
+# # !需要方便调节以获得不同的训练状态，参数可调，符合自然驾驶数据分布，有方便的参数调节接口。
+
+# TODO 初始化不要一开始就在主道上，应该一直都生成，运行到某个为止消失。
+# ! 策略是先生成几辆主道车辆，然后再起始点位置，定时生成车辆，直到达到最大数量为止。（TODO）
+import numpy as np
+from LM_env.interaction_model.vehicle_model import Vehicle
+
 class SimulationInitializer:
-    """专门用于构造仿真器重置时的初始状态"""
-    
     def __init__(self, static_map):
         """
         初始化构造器
         
         Args:
-            static_map: 静态地图数据
+            static_map: 静态地图数据，包含参考线信息
         """
         self.static_map = static_map
         self.reference_line = np.array(list(zip(
@@ -19,105 +23,124 @@ class SimulationInitializer:
             static_map['main_road_avg_trajectory']['y_coords']
         ))) if 'main_road_avg_trajectory' in static_map else None
     
-    def create_ego_init_state(self, position_index=0, velocity=1.0):
+    def create_vehicle(self, position_index, velocity, length, width, **kwargs):
         """
-        创建主车初始状态
-        
-        Args:
-            position_index: 参考线上的位置索引
-            velocity: 初始速度大小
-            
-        Returns:
-            ego_init_state: 主车初始状态字典
-        """
-        if self.reference_line is None or len(self.reference_line) == 0:
-            raise ValueError("参考线数据不可用")
-            
-        return {
-            'position': [self.reference_line[position_index][0], self.reference_line[position_index][1]],
-            'velocity': [velocity, 0.0],
-            'heading': 0.0,
-            'length': 5.0,
-            'width': 2.0
-        }
-    
-    def create_env_vehicle_state(self, position_index, velocity, length=4.5, width=1.8):
-        """
-        创建单个环境车辆状态
+        创建单个车辆对象
         
         Args:
             position_index: 参考线上的位置索引
             velocity: 初始速度大小
             length: 车辆长度
             width: 车辆宽度
-            
+            **kwargs: 自定义属性
+        
         Returns:
-            vehicle_state: 环境车辆状态字典
+            Vehicle: 车辆对象
         """
-        if self.reference_line is None or len(self.reference_line) == 0 or position_index >= len(self.reference_line) - 2:
+        if self.reference_line is None or position_index >= len(self.reference_line) - 2:
             raise ValueError("参考线数据不可用或索引越界")
         
-        # 计算航向角
+        position = self.reference_line[position_index]
         heading = np.arctan2(
-            self.reference_line[position_index+1][1] - self.reference_line[position_index-1][1], 
-            self.reference_line[position_index+1][0] - self.reference_line[position_index-1][0]
+            self.reference_line[position_index + 1][1] - self.reference_line[position_index - 1][1],
+            self.reference_line[position_index + 1][0] - self.reference_line[position_index - 1][0]
         )
         
-        return {
-            'position': [self.reference_line[position_index][0], self.reference_line[position_index][1]],
-            'velocity': [velocity, 0.0],
-            'heading': heading,
-            'length': length,
-            'width': width
-        }
+        return Vehicle(
+            position=position,
+            velocity=[velocity, 0.0],
+            heading=heading,
+            length=length,
+            width=width,
+            **kwargs
+        )
     
-    def create_env_vehicles_init_states(self, configs):
+    def generate_vehicles(self, num_vehicles, position_range, velocity_range, length_range, width_range, **common_attributes):
         """
-        创建多个环境车辆初始状态
+        批量生成环境车辆
         
         Args:
-            configs: 环境车辆配置列表，每个配置包含position_index, velocity, length, width
-            
+            num_vehicles: 生成车辆数量
+            position_range: 位置索引范围 (min_idx, max_idx)
+            velocity_range: 速度范围 (min_vel, max_vel)
+            length_range: 长度范围 (min_len, max_len)
+            width_range: 宽度范围 (min_wid, max_wid)
+            **common_attributes: 所有车辆共享的自定义属性
+        
         Returns:
-            env_vehicles_init_states: 环境车辆初始状态列表
+            list: 车辆对象列表
         """
-        states = []
-        for config in configs:
-            pos_idx = config.get('position_index', 0)
-            vel = config.get('velocity', 0.0)
-            length = config.get('length', 4.5)
-            width = config.get('width', 1.8)
+        vehicles = []
+        for _ in range(num_vehicles):
+            pos_idx = np.random.randint(position_range[0], position_range[1])
+            velocity = np.random.uniform(velocity_range[0], velocity_range[1])
+            length = np.random.uniform(length_range[0], length_range[1])
+            width = np.random.uniform(width_range[0], width_range[1])
             
-            state = self.create_env_vehicle_state(pos_idx, vel, length, width)
-            states.append(state)
-            
-        return states
+            vehicle = self.create_vehicle(pos_idx, velocity, length, width, **common_attributes)
+            vehicles.append(vehicle)
+        return vehicles
     
-    def get_simulation_init_states(self, ego_config=None, env_vehicles_configs=None):
+    def set_strategy_params_for_vehicles(self, vehicles, strategy_params_list):
         """
-        获取完整的仿真初始状态
+        为车辆设置策略参数
         
         Args:
-            ego_config: 主车配置，包含position_index和velocity
-            env_vehicles_configs: 环境车辆配置列表
-            
-        Returns:
-            tuple: (ego_init_state, env_vehicles_init_states)
+            vehicles: 车辆对象列表
+            strategy_params_list: 策略参数列表，每个元素是一个字典
         """
-        # 默认主车配置
-        if ego_config is None:
-            ego_config = {'position_index': 0, 'velocity': 1.0}
+        if len(vehicles) != len(strategy_params_list):
+            raise ValueError("策略参数列表长度与车辆数量不匹配")
         
-        # 默认环境车辆配置
-        if env_vehicles_configs is None:
-            env_vehicles_configs = [
-                {'position_index': 200, 'velocity': 2.0, 'length': 4.5, 'width': 1.8},
-                {'position_index': 600, 'velocity': 3.0, 'length': 4.8, 'width': 1.9},
-                {'position_index': 800, 'velocity': 4.0, 'length': 5.2, 'width': 2.1}
-            ]
+        for vehicle, params in zip(vehicles, strategy_params_list):
+            vehicle.set_strategy_params(**params)
+    
+    def get_simulation_init_states(self, ego_config, env_vehicles_configs=None):
+        """
+        获取仿真初始状态
         
-        # 创建状态
-        ego_state = self.create_ego_init_state(ego_config['position_index'], ego_config['velocity'])
-        env_states = self.create_env_vehicles_init_states(env_vehicles_configs)
+        Args:
+            ego_config: 主车配置，包含position_index, velocity, length, width, attributes
+            env_vehicles_configs: 环境车辆配置，可以是字典（批量生成）或列表（逐个指定）
         
-        return ego_state, env_states
+        Returns:
+            tuple: (ego_vehicle, env_vehicles)
+        """
+        # 创建主车
+        ego_vehicle = []
+        if ego_config:
+            ego_vehicle = self.create_vehicle(
+                position_index=ego_config.get('position_index', 0),
+                velocity=ego_config.get('velocity', 1.0),
+                length=ego_config.get('length', 5.0),
+                width=ego_config.get('width', 2.0),
+                **ego_config.get('attributes', {})
+            )       
+            
+        # 创建环境车辆
+        env_vehicles = []
+        if isinstance(env_vehicles_configs, dict):
+            # 批量生成
+            num_vehicles = env_vehicles_configs.get('num_vehicles', 0)
+            position_range = env_vehicles_configs.get('position_range', (0, len(self.reference_line) - 1))
+            velocity_range = env_vehicles_configs.get('velocity_range', (0, 30))
+            length_range = env_vehicles_configs.get('length_range', (4.0, 5.5))
+            width_range = env_vehicles_configs.get('width_range', (1.8, 2.2))
+            common_attributes = env_vehicles_configs.get('attributes', {})
+            
+            env_vehicles = self.generate_vehicles(
+                num_vehicles, position_range, velocity_range, length_range, width_range, **common_attributes
+            )
+        elif isinstance(env_vehicles_configs, list):
+            # 逐个指定
+            for config in env_vehicles_configs:
+                vehicle = self.create_vehicle(
+                    position_index=config.get('position_index', 0),
+                    velocity=config.get('velocity', 0.0),
+                    length=config.get('length', 4.5),
+                    width=config.get('width', 1.8),
+                    **config.get('attributes', {})
+                )
+                env_vehicles.append(vehicle)
+        
+        return ego_vehicle, env_vehicles

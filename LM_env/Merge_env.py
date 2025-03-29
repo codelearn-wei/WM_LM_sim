@@ -6,10 +6,9 @@ import numpy as np
 import pygame
 import pickle
 from scipy.interpolate import splprep, splev
-from pathlib import Path
-from LM_env.interaction_model.vehicle_model import VehicleKinematicsModel
+from LM_env.interaction_model.vehicle_model import VehicleKinematicsModel , Vehicle
 from LM_env.interaction_model.Initializer import SimulationInitializer
-from LM_env.interaction_model.behaviour import StrategyManager
+from LM_env.interaction_model.strategy import StrategyManager
 
 # TODO:仿真器搭建还有以下工作（已完成主体函数框架）：
 # 1、StrategyManager类，现在是简单的策略，需要建模汇入场景的环境，实现基于交互的策略。（重点，难点。考虑数据分布，决策价值观，世界模型的建立和群体收益等）
@@ -28,14 +27,6 @@ ROAD_COLOR = (180, 180, 180)      # Road color: light gray
 BOUNDARY_COLOR = (255, 255, 255)  # Boundary color: white
 BACKGROUND_COLOR = (30, 30, 30)   # Background color: dark gray
 
-class Vehicle:
-    def __init__(self, position, velocity, heading, length, width):
-        self.position = np.array(position, dtype=float)  # Vehicle center position [x, y]
-        self.velocity = np.array(velocity, dtype=float)  # Velocity [vx, vy]
-        self.acceleration = np.array([0.0, 0.0], dtype=float)  # Acceleration [ax, ay]
-        self.heading = heading  # Heading angle (radians)
-        self.length = length  # Vehicle length
-        self.width = width  # Vehicle width
 
 class MergeEnv(gym.Env):
     """
@@ -47,7 +38,7 @@ class MergeEnv(gym.Env):
     }
     
     def __init__(self, map_path="LM_map/LM_static_map.pkl", render_mode=None, dt=0.1, 
-                 max_episode_steps=500, other_vehicle_strategy='simple'):
+                 max_episode_steps=500, other_vehicle_strategy='interactive'):
         """
         Initialize the merge environment
         
@@ -115,7 +106,7 @@ class MergeEnv(gym.Env):
         if render_mode is not None:
             self._setup_rendering()
     
-    def reset(self, seed=None, options=None):
+    def reset(self, seed=None, options=None,ego_config = {} , env_vehicles_configs = {}):
         """
         Reset the environment to an initial state.
         
@@ -135,30 +126,31 @@ class MergeEnv(gym.Env):
         self.next_vehicle_id = 0
         
         # Get initial states from initializer
-        ego_init_state, env_vehicles_init_states = self.initializer.get_simulation_init_states()
+        ego_init_state, env_vehicles_init_states = self.initializer.get_simulation_init_states(ego_config ,env_vehicles_configs)
         
         # Add ego vehicle
-        ego_id = self.next_vehicle_id
-        self.vehicles[ego_id] = Vehicle(
-            ego_init_state['position'],
-            ego_init_state['velocity'],
-            ego_init_state['heading'],
-            ego_init_state['length'],
-            ego_init_state['width']
-        )
-        self.ego_vehicle_id = ego_id
-        self.next_vehicle_id += 1
+        if ego_init_state:
+            ego_id = self.next_vehicle_id
+            self.vehicles[ego_id] = Vehicle(
+                    ego_init_state.position,
+                    ego_init_state.velocity,
+                    ego_init_state.heading,
+                    ego_init_state.length,
+                    ego_init_state.width,
+            )
+            self.ego_vehicle_id = ego_id
+            self.next_vehicle_id += 1
         
         # Add environment vehicles
         if env_vehicles_init_states:
             for env_vehicle_state in env_vehicles_init_states:
                 env_id = self.next_vehicle_id
                 self.vehicles[env_id] = Vehicle(
-                    env_vehicle_state['position'],
-                    env_vehicle_state['velocity'],
-                    env_vehicle_state['heading'],
-                    env_vehicle_state['length'],
-                    env_vehicle_state['width']
+                        env_vehicle_state.position,
+                        env_vehicle_state.velocity,
+                        env_vehicle_state.heading,
+                        env_vehicle_state.length,
+                        env_vehicle_state.width,
                 )
                 self.next_vehicle_id += 1
         
@@ -172,7 +164,18 @@ class MergeEnv(gym.Env):
         
         return observation, info
     
-    def step(self, action):
+    def delete_vehicle(self):
+        """如果车辆已经到达终点，删除该车辆"""
+        to_delete = []  # 用于存储需要删除的车辆键
+        # 遍历字典，找出满足条件的车辆
+        for vid, vehicle in self.vehicles.items():
+            if vehicle.position[0] < 1030:  # 判断条件
+                to_delete.append(vid)  # 将满足条件的车辆键添加到列表
+        # 根据收集的键逐个删除
+        for vid in to_delete:
+            del self.vehicles[vid]  # 从字典中删除对应的车辆
+    
+    def step(self, ego_action):
         """
         Take a step in the environment with the given action.
         
@@ -187,13 +190,6 @@ class MergeEnv(gym.Env):
             info: Additional information
         """
         self.current_step += 1
-        
-        # 定义主车策略（强化学习或算法输入）
-        ego_vehicle = self.vehicles[self.ego_vehicle_id]
-        acceleration = float(action[0])
-        steering_angle = float(action[1])
-        self.vehicle_model.update(ego_vehicle, acceleration, steering_angle, self.dt)
-        
         # 分发环境车辆获得的观测
         obs_for_other_vehicles = self.distrub_env_obs()
         
@@ -205,30 +201,42 @@ class MergeEnv(gym.Env):
                 acceleration = action[0]
                 steering_angle = action[1]
                 self.vehicle_model.update(vehicle, acceleration, steering_angle, self.dt)
-        
-        #  获得主车的观测
-        observation = self._get_observation()
-        
-        # 计算主车获得的奖励
-        reward = self._calculate_reward()
-        
-        # Check if episode is terminated (collision or off-road)
-        terminated = self._check_termination()
-        # terminated = False
-        
-        # Check if episode is truncated (max steps reached)
-        truncated = self.current_step >= self.max_episode_steps
-        
-        # Additional info
-        info = {
-            'current_step': self.current_step,
-            'ego_position': ego_vehicle.position.tolist(),
-            'ego_velocity': ego_vehicle.velocity.tolist(),
-            'ego_heading': ego_vehicle.heading
-        }
-        # 检测环境状态
-        env_status = self.check_environment_status()
-        print(f" Environment Status: {env_status}")
+           # 定义主车策略（强化学习或算法输入）
+        self.delete_vehicle()  # 删除已经到达终点的车辆
+        observation = np.empty(0)
+        reward = 0
+        terminated = False
+        truncated = False
+        info = {}
+        ## 判断是否加入主车
+        if self.ego_vehicle_id == 0:
+            ego_vehicle = self.vehicles[self.ego_vehicle_id]
+            acceleration = float(ego_action[0])
+            steering_angle = float(ego_action[1])
+            self.vehicle_model.update(ego_vehicle, acceleration, steering_angle, self.dt)
+            #  获得主车的观测
+            observation = self._get_observation()
+            
+            # 计算主车获得的奖励
+            reward = self._calculate_reward()
+            
+            # Check if episode is terminated (collision or off-road)
+            terminated = self._check_termination()
+            # terminated = False
+            
+            # Check if episode is truncated (max steps reached)
+            truncated = self.current_step >= self.max_episode_steps
+            
+            # Additional info
+            info = {
+                'current_step': self.current_step,
+                'ego_position': ego_vehicle.position.tolist(),
+                'ego_velocity': ego_vehicle.velocity.tolist(),
+                'ego_heading': ego_vehicle.heading
+            }
+            # 检测环境状态
+            env_status = self.check_environment_status()
+            print(f" Environment Status: {env_status}")
         
         # Render if needed
         if self.render_mode == "human":
@@ -253,7 +261,6 @@ class MergeEnv(gym.Env):
             pygame.quit()
             self.screen = None
     
-    import numpy as np
 
     def distrub_env_obs(self):
         """获取当前仿真状态，供外部算法使用，包含周围车辆的相对信息"""
@@ -278,20 +285,35 @@ class MergeEnv(gym.Env):
                 # 计算两车距离
                 distance = np.linalg.norm(vehicle.position - other_vehicle.position)
                 if distance < distance_threshold:
+                    # 绝对位置
+                    position = other_vehicle.position.tolist()
                     # 相对位置
                     relative_position = (other_vehicle.position - vehicle.position).tolist()
+                    # 绝对速度
+                    velocity = other_vehicle.velocity.tolist()                 
                     # 相对速度
-                    relative_velocity = (other_vehicle.velocity - vehicle.velocity).tolist()
+                    relative_velocity = (other_vehicle.velocity - vehicle.velocity).tolist()                  
+                    # 绝对航向角
+                    heading = other_vehicle.heading
                     # 相对航向角
                     relative_heading = other_vehicle.heading - vehicle.heading
                     # 规范化到 [-π, π]
                     relative_heading = (relative_heading + np.pi) % (2 * np.pi) - np.pi
+                    # 车长
+                    length = other_vehicle.length
+                    # 车宽
+                    width = other_vehicle.width
 
                     neighbors.append({
                         'vehicle_id': other_vid,
+                        'position': position,
+                        'heading': heading,
+                        'velocity': velocity,
                         'relative_position': relative_position,
                         'relative_velocity': relative_velocity,
-                        'relative_heading': relative_heading
+                        'relative_heading': relative_heading,
+                        'length': length,
+                        'withd': width
                     })
 
             # 添加邻居信息
@@ -310,40 +332,42 @@ class MergeEnv(gym.Env):
         Convert the current state into an observation for the RL agent
         """
         # Get ego vehicle state
-        ego_vehicle = self.vehicles[self.ego_vehicle_id]
-        ego_x, ego_y = ego_vehicle.position
-        ego_heading = ego_vehicle.heading
-        ego_speed = np.linalg.norm(ego_vehicle.velocity)
-        
-        # Basic ego vehicle features
-        obs = [ego_x, ego_y, ego_heading, ego_speed]
-        
-        # Get surrounding vehicles' relative positions and velocities
-        surrounding_vehicles = []
-        for vid, vehicle in self.vehicles.items():
-            if vid != self.ego_vehicle_id:
-                # Calculate relative position and velocity
-                rel_pos = vehicle.position - ego_vehicle.position
-                rel_vel = vehicle.velocity - ego_vehicle.velocity
-                
-                # Calculate distance
-                distance = np.linalg.norm(rel_pos)
-                
-                surrounding_vehicles.append((distance, rel_pos[0], rel_pos[1], rel_vel[0], rel_vel[1]))
-        
-        # Sort by distance and take closest vehicles
-        surrounding_vehicles.sort()
-        max_vehicles_observed = (self.observation_space.shape[0] - 4) // 4
-        
-        # Add surrounding vehicles to observation
-        for i in range(max_vehicles_observed):
-            if i < len(surrounding_vehicles):
-                # Add relative x, y position and vx, vy velocity
-                obs.extend([surrounding_vehicles[i][1], surrounding_vehicles[i][2],
-                           surrounding_vehicles[i][3], surrounding_vehicles[i][4]])
-            else:
-                # Pad with zeros if we have fewer vehicles than the maximum
-                obs.extend([0.0, 0.0, 0.0, 0.0])
+        obs = []
+        if self.ego_vehicle_id == 0:
+            ego_vehicle = self.vehicles[self.ego_vehicle_id]
+            ego_x, ego_y = ego_vehicle.position
+            ego_heading = ego_vehicle.heading
+            ego_speed = np.linalg.norm(ego_vehicle.velocity)
+            
+            # Basic ego vehicle features
+            obs = [ego_x, ego_y, ego_heading, ego_speed]
+            
+            # Get surrounding vehicles' relative positions and velocities
+            surrounding_vehicles = []
+            for vid, vehicle in self.vehicles.items():
+                if vid != self.ego_vehicle_id:
+                    # Calculate relative position and velocity
+                    rel_pos = vehicle.position - ego_vehicle.position
+                    rel_vel = vehicle.velocity - ego_vehicle.velocity
+                    
+                    # Calculate distance
+                    distance = np.linalg.norm(rel_pos)
+                    
+                    surrounding_vehicles.append((distance, rel_pos[0], rel_pos[1], rel_vel[0], rel_vel[1]))
+            
+            # Sort by distance and take closest vehicles
+            surrounding_vehicles.sort()
+            max_vehicles_observed = (self.observation_space.shape[0] - 4) // 4
+            
+            # Add surrounding vehicles to observation
+            for i in range(max_vehicles_observed):
+                if i < len(surrounding_vehicles):
+                    # Add relative x, y position and vx, vy velocity
+                    obs.extend([surrounding_vehicles[i][1], surrounding_vehicles[i][2],
+                            surrounding_vehicles[i][3], surrounding_vehicles[i][4]])
+                else:
+                    # Pad with zeros if we have fewer vehicles than the maximum
+                    obs.extend([0.0, 0.0, 0.0, 0.0])
         
         return np.array(obs, dtype=np.float32)
     
@@ -690,12 +714,31 @@ if __name__ == "__main__":
 
     render_mode = 'human' 
     episodes = 100
-    max_steps = 500
-    
+    max_steps = 500 
     for i in range(episodes):
         ender_mode = 'human' 
         env = make_env(render_mode=render_mode)
-        observation, info = env.reset()      
+        # 定义reset函数的输入
+        # TODO：交通状态（主道车辆的状态）
+        # TODO：社会化函数（主道车辆的策略参数）
+        ego_config = {
+        "position_index": 0,
+        "velocity": 0.0,
+        "length": 5.0,
+        "width": 2.0,
+        "attributes": {}
+        }  
+        
+        env_vehicles_configs = {
+            "num_vehicles": 3,
+            "position_range": [100, 900],
+            "velocity_range": [2.0, 5.0],
+            "length_range": [4.0, 5.5],
+            "width_range": [1.8, 2.2],
+            "attributes": {}
+        }
+        observation, info = env.reset(ego_config = ego_config , env_vehicles_configs = env_vehicles_configs)  
+            
         for i in range(max_steps):   
             #TODO： 接入强化学习主车动作选择      
             acceleration = 0

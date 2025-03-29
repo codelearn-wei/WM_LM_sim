@@ -12,6 +12,8 @@ from utils.visualization import visualize_predictions, visualize_weighted_region
 from utils.logger import setup_logger
 import matplotlib.pyplot as plt
 import argparse
+import datetime
+import glob
 
 def setup_device():
     """
@@ -129,20 +131,33 @@ def save_checkpoint(model, optimizer, epoch, loss, config, is_best=False):
     }
     
     if is_best:
-        torch.save(checkpoint, os.path.join(config.save_dir, 'best_model.pth'))
+        torch.save(checkpoint, os.path.join(config.save_dir, 'best_model1.pth'))
     else:
         torch.save(checkpoint, os.path.join(config.save_dir, f'checkpoint_epoch_{epoch+1}.pth'))
 
-def validate(model, val_loader, config):
+def validate(model, val_loader, config, epoch=None):
     """
     验证模型
+    
+    Args:
+        model: 模型
+        val_loader: 验证数据加载器
+        config: 配置对象
+        epoch: 当前epoch，用于保存验证结果
     """
     model.eval()
     total_loss = 0
     
     # 创建可视化目录
-    viz_dir = os.path.join(config.log_dir, 'val_visualizations')
+    viz_dir = os.path.join(config.log_dir, 'val_visualizations1')
     os.makedirs(viz_dir, exist_ok=True)
+    
+    # 获取当前时间戳
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    # 用于存储所有批次的预测结果
+    all_predictions = []
+    all_targets = []
     
     with torch.no_grad():
         for batch_idx, batch in enumerate(tqdm(val_loader, desc="验证中")):
@@ -162,17 +177,81 @@ def validate(model, val_loader, config):
                 pred_features, target_features, pred_image, next_frame = model(bev_frames, actions, next_frame)
                 loss = model.compute_loss(pred_features, target_features, pred_image, next_frame, road_mask)
                 
-                # 保存一些验证结果可视化
-                if batch_idx == 0:
-                    vis_images = visualize_predictions(
-                        pred_image[:min(4, pred_image.size(0))], 
-                        next_frame[:min(4, next_frame.size(0))]
-                    )
-                    vis_path = os.path.join(viz_dir, f'val_predictions.png')
-                    vis_images.savefig(vis_path)
-                    plt.close(vis_images)
+                # 保存每个批次的验证结果可视化
+                # vis_images = visualize_predictions(
+                #     pred_image[:min(4, pred_image.size(0))], 
+                #     next_frame[:min(4, next_frame.size(0))]
+                # )
+                # vis_path = os.path.join(viz_dir, f'val_predictions_epoch_{epoch}_{timestamp}_batch_{batch_idx}.png')
+                # vis_images.savefig(vis_path)
+                # plt.close(vis_images)
+                
+                # 存储预测和目标图像用于后续对比
+                all_predictions.append(pred_image[:min(4, pred_image.size(0))])
+                all_targets.append(next_frame[:min(4, next_frame.size(0))])
             
             total_loss += loss.item()
+    
+    # 如果有预测结果，创建验证回合间的对比可视化
+    if len(all_predictions) > 0:
+        # 将所有批次的预测和目标堆叠在一起
+        all_preds = torch.cat(all_predictions, dim=0)
+        all_targets = torch.cat(all_targets, dim=0)
+        
+        # 创建验证回合间的对比图
+        plt.figure(figsize=(15, 10))
+        
+        # 选择要显示的样本数量（最多显示8个）
+        num_samples = min(8, all_preds.size(0))
+        
+        for i in range(num_samples):
+            # 预测图像
+            plt.subplot(2, num_samples, i + 1)
+            plt.imshow(all_preds[i].cpu().permute(1, 2, 0))
+            plt.title(f'Pred {i}')
+            plt.axis('off')
+            
+            # 目标图像
+            plt.subplot(2, num_samples, i + num_samples + 1)
+            plt.imshow(all_targets[i].cpu().permute(1, 2, 0))
+            plt.title(f'Target {i}')
+            plt.axis('off')
+        
+        plt.suptitle(f'Validation Results - Epoch {epoch}', fontsize=14)
+        plt.tight_layout()
+        
+        # 保存验证回合对比图
+        comparison_path = os.path.join(viz_dir, f'epoch_comparison_{epoch}_{timestamp}.png')
+        plt.savefig(comparison_path)
+        plt.close()
+        
+        # 如果存在之前的验证结果，创建验证回合间的对比
+        prev_comparison_path = os.path.join(viz_dir, f'epoch_comparison_{epoch-1}_*.png')
+        prev_files = glob.glob(prev_comparison_path)
+        if prev_files:
+            prev_file = prev_files[0]  # 使用最新的上一个epoch的结果
+            prev_img = plt.imread(prev_file)
+            curr_img = plt.imread(comparison_path)
+            
+            # 创建验证回合间的对比图
+            plt.figure(figsize=(20, 10))
+            plt.subplot(1, 2, 1)
+            plt.imshow(prev_img)
+            plt.title(f'Epoch {epoch-1} Validation Results')
+            plt.axis('off')
+            
+            plt.subplot(1, 2, 2)
+            plt.imshow(curr_img)
+            plt.title(f'Epoch {epoch} Validation Results')
+            plt.axis('off')
+            
+            plt.suptitle(f'Validation Results Comparison - Epoch {epoch-1} vs {epoch}', fontsize=16)
+            plt.tight_layout()
+            
+            # 保存验证回合间的对比图
+            epoch_comparison_path = os.path.join(viz_dir, f'epoch_comparison_{epoch-1}_vs_{epoch}_{timestamp}.png')
+            plt.savefig(epoch_comparison_path)
+            plt.close()
     
     avg_loss = total_loss / len(val_loader)
     return avg_loss
@@ -220,7 +299,7 @@ def train_feature_mode(model, train_loader, val_loader, optimizer, scheduler, co
             pbar.set_postfix({'loss': f'{loss.item():.4f}'})
         
         # 验证阶段
-        val_loss = validate(model, val_loader, config)
+        val_loss = validate(model, val_loader, config, epoch)
         logger.info(f'Epoch {epoch+1}, Validation Loss: {val_loss:.4f}')
         
         # 保存最佳模型
@@ -240,8 +319,8 @@ def train_feature_mode(model, train_loader, val_loader, optimizer, scheduler, co
         scheduler.step()
         
         # 定期保存检查点
-        if (epoch + 1) % config.save_interval == 0:
-            save_checkpoint(model, optimizer, epoch, train_loss, config)
+        # if (epoch + 1) % config.save_interval == 0:
+        #     save_checkpoint(model, optimizer, epoch, train_loss, config)
 
 def train_image_mode(model, train_loader, val_loader, optimizer, scheduler, config, logger):
     """图像生成模式训练"""
@@ -269,55 +348,43 @@ def train_image_mode(model, train_loader, val_loader, optimizer, scheduler, conf
         'other_losses': []
     }
     
-    # 安全获取模型属性的辅助函数
-    def get_model_attr(attr_name, default_value=None):
-        """安全获取模型属性，处理DataParallel模型"""
-        try:
-            if isinstance(model, torch.nn.DataParallel):
-                return getattr(model.module, attr_name, default_value)
-            return getattr(model, attr_name, default_value)
-        except (AttributeError, KeyError) as e:
-            logger.warning(f"无法获取模型属性 {attr_name}: {e}")
-            return default_value
-    
     for epoch in range(config.num_epochs):
         # 更新epoch用于渐进式权重调整
         if config.use_progressive_weights:
-            # 安全更新epoch
-            try:
-                if isinstance(model, torch.nn.DataParallel):
-                    model.module.update_epoch(epoch)
-                else:
-                    model.update_epoch(epoch)
-                
-                # 记录当前权重
-                weight_history['epoch'].append(epoch)
-                
-                # 安全获取权重值
-                image_loss_fn = get_model_attr('image_loss_fn')
-                if image_loss_fn:
-                    weight_history['vehicle'].append(getattr(image_loss_fn, 'vehicle_weight', config.weights['initial']['vehicle']))
-                    weight_history['road'].append(getattr(image_loss_fn, 'road_weight', config.weights['initial']['road']))
-                    weight_history['boundary'].append(getattr(image_loss_fn, 'boundary_weight', config.weights['initial']['boundary']))
-                else:
-                    # 使用配置中的权重作为备用
-                    weight_history['vehicle'].append(config.weights['initial']['vehicle'])
-                    weight_history['road'].append(config.weights['initial']['road'])
-                    weight_history['boundary'].append(config.weights['initial']['boundary'])
-                
-                weight_history['other_losses'].append(get_model_attr('other_losses_weight', config.weights['initial']['other_losses']))
-                
-                # 每10个epoch或在权重变化点，保存加权区域可视化
-                if epoch in config.weight_schedule or epoch % 10 == 0:
-                    if len(train_loader) > 0:
-                        sample_batch = next(iter(train_loader))
-                        sample_image = sample_batch['next_frame'][0].unsqueeze(0)
-                        weight_viz_path = os.path.join(viz_dir, f'weight_regions_epoch_{epoch}.png')
-                        visualize_weighted_regions(sample_image, save_path=weight_viz_path)
-                        logger.info(f"Epoch {epoch}权重区域可视化已保存到 {weight_viz_path}")
-            except Exception as e:
-                logger.error(f"更新epoch时发生错误: {e}")
+            # 更新模型中的epoch
+            if isinstance(model, torch.nn.DataParallel):
+                model.module.update_epoch(epoch)
+            else:
+                model.update_epoch(epoch)
             
+            # 记录当前权重
+            weight_history['epoch'].append(epoch)
+            
+            # 获取当前权重值
+            if isinstance(model, torch.nn.DataParallel):
+                image_loss_fn = model.module.image_loss_fn
+            else:
+                image_loss_fn = model.image_loss_fn
+                
+            weight_history['vehicle'].append(image_loss_fn.vehicle_weight)
+            weight_history['road'].append(image_loss_fn.road_weight)
+            weight_history['boundary'].append(image_loss_fn.boundary_weight)
+            weight_history['other_losses'].append(model.other_losses_weight if isinstance(model, torch.nn.DataParallel) else model.other_losses_weight)
+            
+            # 每10个epoch保存一次权重区域可视化
+            if epoch % 10 == 0:
+                if len(train_loader) > 0:
+                    sample_batch = next(iter(train_loader))
+                    sample_image = sample_batch['next_frame'][0].unsqueeze(0)
+                    weight_viz_path = os.path.join(viz_dir, f'weight_regions_epoch_{epoch}.png')
+                    visualize_weighted_regions(sample_image, save_path=weight_viz_path)
+                    logger.info(f"Epoch {epoch}权重区域可视化已保存到 {weight_viz_path}")
+            
+            # 记录当前权重值
+            logger.info(f"Epoch {epoch} 当前权重: vehicle={image_loss_fn.vehicle_weight:.2f}, "
+                       f"road={image_loss_fn.road_weight:.2f}, boundary={image_loss_fn.boundary_weight:.2f}, "
+                       f"other_losses={model.other_losses_weight:.2f}")
+        
         model.train()
         train_loss = 0
         
@@ -372,7 +439,7 @@ def train_image_mode(model, train_loader, val_loader, optimizer, scheduler, conf
         # 每隔val_interval个epoch进行验证
         if (epoch + 1) % config.val_interval == 0:
             try:
-                val_loss = validate(model, val_loader, config)
+                val_loss = validate(model, val_loader, config, epoch)
                 logger.info(f"Epoch {epoch+1}/{config.num_epochs}, Val Loss: {val_loss:.6f}")
                 
                 # 检查是否需要保存模型
