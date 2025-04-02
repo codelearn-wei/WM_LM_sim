@@ -131,7 +131,7 @@ def save_checkpoint(model, optimizer, epoch, loss, config, is_best=False):
     }
     
     if is_best:
-        torch.save(checkpoint, os.path.join(config.save_dir, 'best_model1.pth'))
+        torch.save(checkpoint, os.path.join(config.save_dir, 'best_model2.pth'))
     else:
         torch.save(checkpoint, os.path.join(config.save_dir, f'checkpoint_epoch_{epoch+1}.pth'))
 
@@ -149,7 +149,7 @@ def validate(model, val_loader, config, epoch=None):
     total_loss = 0
     
     # 创建可视化目录
-    viz_dir = os.path.join(config.log_dir, 'val_visualizations1')
+    viz_dir = os.path.join(config.log_dir, 'val_visualizations2')
     os.makedirs(viz_dir, exist_ok=True)
     
     # 获取当前时间戳
@@ -461,9 +461,9 @@ def train_image_mode(model, train_loader, val_loader, optimizer, scheduler, conf
         # 更新学习率
         scheduler.step()
         
-        # 定期保存检查点
-        if (epoch + 1) % config.save_interval == 0:
-            save_checkpoint(model, optimizer, epoch, train_loss, config)
+        # # 定期保存检查点
+        # if (epoch + 1) % config.save_interval == 0:
+        #     save_checkpoint(model, optimizer, epoch, train_loss, config)
     
     # 训练结束后，保存权重历史记录
     if config.use_progressive_weights and len(weight_history['epoch']) > 0:

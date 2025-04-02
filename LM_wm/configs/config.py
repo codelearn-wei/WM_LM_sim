@@ -6,8 +6,8 @@ import torchvision
 MAP_PATH = "LM_data/map/DR_CHN_Merging_ZS.json"
 RAW_DATA_PATH = "LM_data/data/DR_CHN_Merging_ZS"
 TRAINING_DATA_DIR = "LM_wm/training_data"
-VALIDATION_DATA_DIR = "LM_wm/validation_data"
-MODEL_DIR = "LM_wm/models/checkpoints"
+# VALIDATION_DATA_DIR = "LM_wm/validation_data"
+# MODEL_DIR = "LM_wm/models/checkpoints"
 
 # Training parameters
 # BATCH_SIZE = 16
@@ -40,8 +40,6 @@ IMAGE_SIZE = (224, 224)  # DINOv2的输入尺寸
 
 # Create necessary directories
 Path(TRAINING_DATA_DIR).mkdir(parents=True, exist_ok=True)
-Path(VALIDATION_DATA_DIR).mkdir(parents=True, exist_ok=True)
-Path(MODEL_DIR).mkdir(parents=True, exist_ok=True) 
 # 在数据加载器中预处理图像
 def preprocess_image(image):
     return torchvision.transforms.Resize(IMAGE_SIZE)(image)
@@ -63,7 +61,7 @@ class Config:
         self.image_size = IMAGE_SIZE
         
         # 训练相关配置
-        self.num_epochs = 200
+        self.num_epochs = 400
         self.learning_rate = 1e-4
         self.weight_decay = 1e-5
         self.warmup_steps = 500
@@ -87,8 +85,8 @@ class Config:
             },
             # 终止值
             "final": {
-                "vehicle": 2,     # 车辆区域最终权重
-                "road": 2,        # 道路区域最终权重
+                "vehicle": 3,     # 车辆区域最终权重
+                "road": 3,        # 道路区域最终权重
                 "boundary": 0.001,    # 边界区域最终权重
                 "other_losses": 0.6 # 其他损失最终权重
             }
@@ -97,7 +95,7 @@ class Config:
         # 2. 线性变化的起止epoch
         self.weight_epochs = {
             "start": 0,  # 开始渐进式调整的epoch
-            "end": 3    # 结束渐进式调整的epoch
+            "end": 5    # 结束渐进式调整的epoch
         }
         
         # 为保持向后兼容性，设置对应的属性

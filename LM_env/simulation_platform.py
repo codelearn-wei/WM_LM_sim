@@ -170,7 +170,8 @@ class Simulator:
                 'position': vehicle.position.tolist(),
                 'velocity': vehicle.velocity.tolist(),
                 'acceleration': vehicle.acceleration.tolist(),
-                'heading': vehicle.heading  # 航向角
+                'heading': vehicle.heading,  # 航向角
+                'is_ego': vehicle.attributes.get('isego', False)
             }
 
             # 计算周围车辆的相对信息
@@ -209,7 +210,8 @@ class Simulator:
                         'relative_velocity': relative_velocity,
                         'relative_heading': relative_heading,
                         'length': length,
-                        'withd': width
+                        'withd': width,
+                        'is_ego': vehicle.attributes.get('isego', False)
                     })
 
             # 添加邻居信息
@@ -577,20 +579,21 @@ def main():
     
     # 3、 创建仿真器初始化函数
     ego_config = {
-    "position_index": 0,
-    "velocity": 1.0,
-    "length": 5.0,
-    "width": 2.0,
-    "attributes": {}
+    # 'position_index': 2,
+    # 'velocity': 10.0,
+    # 'length': 5.0,
+    # 'width': 2.0,
+    # 'lane': 1,
+    # 'attributes': {'is_ego': True}
     }
-    
+
     env_vehicles_configs = {
-        "num_vehicles": 5,
-        "position_range": [100, 900],
-        "velocity_range": [2.0, 5.0],
-        "length_range": [4.0, 5.5],
-        "width_range": [1.8, 2.2],
-        "attributes": {}
+        'num_vehicles': 8,
+        'velocity_range': (5, 6),
+        'length_range': (4.5, 5),
+        'width_range': (1.6, 2.0),
+        'vehicle_spacing': 1.0,  # 数字越大表示生成车辆越稀疏
+        'attributes': {'is_ego': False}
     }
     initializer = SimulationInitializer(static_map[0])
     # 加载初始化配置文件

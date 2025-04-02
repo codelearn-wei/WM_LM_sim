@@ -1,69 +1,87 @@
 {
-    "version": "0.2.0",
-    "configurations": [
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Python: 训练模式",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/LM_wm/main.py",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}"
+      },
+      "args": [
+        "--mode",
+        "feature",
+        "--train"
+      ]
+    },
+    {
+      "name": "Python: 图像生成模式",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/LM_wm/main.py",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}"
+      },
+      "args": [
+        "--mode",
+        "image",
+        "--train"
+      ]
+    },
+    {
+      "name": "Python: 仅生成数据",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/LM_wm/main.py",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}"
+      },
+      "args": [
+        "--generate_data"
+      ]
+    },
+    {
+      "name": "Python: 仅生成数据",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/LM_wm/main.py",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}"
+      },
+      "args": [
+        "--mode",
+        "predict",
+        "--checkpoint",
+        "LM_wm/checkpoints/best_model.pth"
+      ]
+    },
+    {
+      "name": "C/C++ Runner: Debug Session",
+      "type": "cppdbg",
+      "request": "launch",
+      "args": [],
+      "stopAtEntry": false,
+      "externalConsole": true,
+      "cwd": "d:/DFG_work/MY_project/value_based_decision/WM_LM_sim/LM_env/interaction_model/obs_reset",
+      "program": "d:/DFG_work/MY_project/value_based_decision/WM_LM_sim/LM_env/interaction_model/obs_reset/build/Debug/outDebug",
+      "MIMode": "gdb",
+      "miDebuggerPath": "gdb",
+      "setupCommands": [
         {
-            "name": "Python: 训练模式",
-            "type": "debugpy",
-            "request": "launch",
-            "program": "${workspaceFolder}/LM_wm/main.py",
-            "console": "integratedTerminal",
-            "justMyCode": true,
-            "env": {
-                "PYTHONPATH": "${workspaceFolder}"
-            },
-            "args": [
-                "--mode",
-                "feature",
-                "--train"
-            ]
-        },
-        {
-            "name": "Python: 图像生成模式",
-            "type": "debugpy",
-            "request": "launch",
-            "program": "${workspaceFolder}/LM_wm/main.py",
-            "console": "integratedTerminal",
-            "justMyCode": true,
-            "env": {
-                "PYTHONPATH": "${workspaceFolder}"
-            },
-            "args": [
-                "--mode",
-                "image",
-                "--train"
-            ]
-        },
-        {
-            "name": "Python: 仅生成数据",
-            "type": "debugpy",
-            "request": "launch",
-            "program": "${workspaceFolder}/LM_wm/main.py",
-            "console": "integratedTerminal",
-            "justMyCode": true,
-            "env": {
-                "PYTHONPATH": "${workspaceFolder}"
-            },
-            "args": [
-                "--generate_data"
-            ]
-        },
-        {
-            "name": "Python: 仅生成数据",
-            "type": "debugpy",
-            "request": "launch",
-            "program": "${workspaceFolder}/LM_wm/main.py",
-            "console": "integratedTerminal",
-            "justMyCode": true,
-            "env": {
-                "PYTHONPATH": "${workspaceFolder}"
-            },
-            "args": [
-                "--mode",
-                "predict",
-                "--checkpoint",
-                "LM_wm/checkpoints/best_model.pth"
-            ]
-        },
-   
-    ]
+          "description": "Enable pretty-printing for gdb",
+          "text": "-enable-pretty-printing",
+          "ignoreFailures": true
+        }
+      ]
+    }
+  ]
 }

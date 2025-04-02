@@ -129,14 +129,16 @@ class MergeEnv(gym.Env):
         ego_init_state, env_vehicles_init_states = self.initializer.get_simulation_init_states(ego_config ,env_vehicles_configs)
         
         # Add ego vehicle
+        # TODO:如何生成多辆主车？？？
         if ego_init_state:
             ego_id = self.next_vehicle_id
             self.vehicles[ego_id] = Vehicle(
-                    ego_init_state.position,
-                    ego_init_state.velocity,
-                    ego_init_state.heading,
-                    ego_init_state.length,
-                    ego_init_state.width,
+                    position = ego_init_state.position,
+                    velocity = ego_init_state.velocity,
+                    heading = ego_init_state.heading,
+                    length = ego_init_state.length,
+                    width = ego_init_state.width,
+                    attributes = ego_init_state.attributes    
             )
             self.ego_vehicle_id = ego_id
             self.next_vehicle_id += 1
@@ -146,11 +148,12 @@ class MergeEnv(gym.Env):
             for env_vehicle_state in env_vehicles_init_states:
                 env_id = self.next_vehicle_id
                 self.vehicles[env_id] = Vehicle(
-                        env_vehicle_state.position,
-                        env_vehicle_state.velocity,
-                        env_vehicle_state.heading,
-                        env_vehicle_state.length,
-                        env_vehicle_state.width,
+                        position = env_vehicle_state.position,
+                        velocity = env_vehicle_state.velocity,
+                        heading = env_vehicle_state.heading,
+                        length = env_vehicle_state.length,
+                        width = env_vehicle_state.width,
+                        attributes = env_vehicle_state.attributes           
                 )
                 self.next_vehicle_id += 1
         
@@ -196,20 +199,20 @@ class MergeEnv(gym.Env):
         # 利用定义的World_Model选择环境车辆的动作
         env_actions = self.strategy_func(obs_for_other_vehicles)
         for vid, action in env_actions.items():
-            if vid in self.vehicles and vid != self.ego_vehicle_id:
+            if vid in self.vehicles :
                 vehicle = self.vehicles[vid]
                 acceleration = action[0]
                 steering_angle = action[1]
                 self.vehicle_model.update(vehicle, acceleration, steering_angle, self.dt)
-           # 定义主车策略（强化学习或算法输入）
         self.delete_vehicle()  # 删除已经到达终点的车辆
         observation = np.empty(0)
         reward = 0
         terminated = False
         truncated = False
         info = {}
+        
         ## 判断是否加入主车
-        if self.ego_vehicle_id == 0:
+        if self.ego_vehicle_id != None:
             ego_vehicle = self.vehicles[self.ego_vehicle_id]
             acceleration = float(ego_action[0])
             steering_angle = float(ego_action[1])
@@ -274,7 +277,8 @@ class MergeEnv(gym.Env):
                 'position': vehicle.position.tolist(),
                 'velocity': vehicle.velocity.tolist(),
                 'acceleration': vehicle.acceleration.tolist(),
-                'heading': vehicle.heading  # 航向角
+                'heading': vehicle.heading , # 航向角
+                 'is_ego': vehicle.attributes.get('isego', False)
             }
 
             # 计算周围车辆的相对信息
@@ -303,6 +307,8 @@ class MergeEnv(gym.Env):
                     length = other_vehicle.length
                     # 车宽
                     width = other_vehicle.width
+                    # 是否是主车
+                    is_ego = other_vehicle.attributes.get('isego', False)
 
                     neighbors.append({
                         'vehicle_id': other_vid,
@@ -313,7 +319,8 @@ class MergeEnv(gym.Env):
                         'relative_velocity': relative_velocity,
                         'relative_heading': relative_heading,
                         'length': length,
-                        'withd': width
+                        'withd': width,
+                        'is_ego': is_ego
                     })
 
             # 添加邻居信息
@@ -721,21 +728,23 @@ if __name__ == "__main__":
         # 定义reset函数的输入
         # TODO：交通状态（主道车辆的状态）
         # TODO：社会化函数（主道车辆的策略参数）
+        # TODO：进一步对主车进行设置
         ego_config = {
-        "position_index": 0,
-        "velocity": 0.0,
-        "length": 5.0,
-        "width": 2.0,
-        "attributes": {}
-        }  
-        
+            #  'position_index': 2,
+            #     'velocity': 10.0,
+            #     'length': 5.0,
+            #     'width': 2.0,
+            #     'lane': 1,
+            #     'attributes': {'is_ego': True}  
+        }
+
         env_vehicles_configs = {
-            "num_vehicles": 3,
-            "position_range": [100, 900],
-            "velocity_range": [2.0, 5.0],
-            "length_range": [4.0, 5.5],
-            "width_range": [1.8, 2.2],
-            "attributes": {}
+            'num_vehicles': 10,
+            'velocity_range': (5, 6),
+            'length_range': (4.0, 5),
+            'width_range': (1.8, 2.2),
+            'vehicle_spacing': 1.0,  # 数字越大表示生成车辆越稀疏
+            'attributes': {'is_ego': False}
         }
         observation, info = env.reset(ego_config = ego_config , env_vehicles_configs = env_vehicles_configs)  
             
