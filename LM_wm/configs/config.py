@@ -1,29 +1,12 @@
 from pathlib import Path
 import torch
 import torchvision
+import os
 
 # Data paths
 MAP_PATH = "LM_data/map/DR_CHN_Merging_ZS.json"
 RAW_DATA_PATH = "LM_data/data/DR_CHN_Merging_ZS"
 TRAINING_DATA_DIR = "LM_wm/training_data"
-# VALIDATION_DATA_DIR = "LM_wm/validation_data"
-# MODEL_DIR = "LM_wm/models/checkpoints"
-
-# Training parameters
-# BATCH_SIZE = 16
-# NUM_EPOCHS = 50
-# LEARNING_RATE = 1e-4
-# HISTORY_STEPS = 20
-# HIDDEN_DIM = 256
-# VALIDATION_FREQ = 5
-# EARLY_STOPPING_PATIENCE = 5
-
-# Model parameters
-# ACTION_DIM = 30  # 10辆车 × 3个动作值
-
-# Data generation parameters
-# NUM_WORKERS = 2
-# PREFETCH_FACTOR = 2
 
 # GPU settings
 USE_GPU = True
@@ -61,7 +44,7 @@ class Config:
         self.image_size = IMAGE_SIZE
         
         # 训练相关配置
-        self.num_epochs = 400
+        self.num_epochs = 200
         self.learning_rate = 1e-4
         self.weight_decay = 1e-5
         self.warmup_steps = 500
@@ -130,11 +113,11 @@ class Config:
             }
         }
         
-        # 日志和保存配置
-        self.log_dir = "LM_wm/logs"
-        self.save_dir = "LM_wm/checkpoints"
-        self.log_interval = 10
-        self.save_interval = 5
+        # 统一的日志目录配置
+        self.base_log_dir = "LM_wm/logs"
+        self.log_dir = None
+        self.save_dir = None
+        self.update_paths()
         
         # 验证配置
         self.val_interval = 5
@@ -252,3 +235,67 @@ class Config:
                 schedule[epoch] = schedule[epoch].copy()
                 
         return schedule 
+
+    def update_paths(self):
+        """根据训练模式更新日志和保存路径"""
+        mode_suffix = "_image" if self.train_mode == "image" else "_feature"
+        self.log_dir = os.path.join(self.base_log_dir, f"logs{mode_suffix}")
+        self.save_dir = os.path.join(self.base_log_dir, f"checkpoints{mode_suffix}")
+        
+        # 创建必要的目录
+        os.makedirs(self.log_dir, exist_ok=True)
+        os.makedirs(self.save_dir, exist_ok=True)
+        
+    def set_mode(self, mode):
+        """设置训练模式并更新相关路径"""
+        if mode not in ["feature", "image"]:
+            raise ValueError(f"不支持的训练模式: {mode}")
+        self.train_mode = mode
+        self.update_paths()
+        
+        # 其他配置
+        self.log_interval = 10
+        self.save_interval = 5
+        self.val_interval = 5
+        self.val_batch_size = 16
+        self.test_interval = 5
+        self.vis_interval = 5
+        self.num_vis_samples = 4
+        self.num_trajectories = 1000
+        self.trajectory_length = 50
+        self.num_workers_gen = 4
+        self.seed = 42
+        self.debug = False
+        self.dino_model_name = "facebook/dinov2-base"
+        self.dino_output_dim = 768  # dinov2-base的输出维度
+        self.decoder_channels = [256, 128, 64, 32, 16]
+        self.decoder_output_channels = 3  # RGB图像
+        self.optimizer = {
+            "type": "adamw",
+            "lr": 1e-4,
+            "weight_decay": 1e-5,
+            "betas": (0.9, 0.999)
+        }
+        self.scheduler = {
+            "type": "cosine",
+            "T_max": 100,
+            "eta_min": 1e-6
+        }
+        self.augmentation = {
+            "enabled": True,
+            "random_flip": True,
+            "random_rotation": True,
+            "color_jitter": True
+        }
+        self.multi_gpu = {
+            "enabled": torch.cuda.device_count() > 1,
+            "strategy": "ddp"  # 可选: "dp" 或 "ddp"
+        }
+        self.amp = {
+            "enabled": True,
+            "opt_level": "O1"  # 可选: "O0", "O1", "O2", "O3"
+        }
+        self.gradient_accumulation = {
+            "enabled": True,
+            "steps": 4
+        } 

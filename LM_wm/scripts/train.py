@@ -131,7 +131,7 @@ def save_checkpoint(model, optimizer, epoch, loss, config, is_best=False):
     }
     
     if is_best:
-        torch.save(checkpoint, os.path.join(config.save_dir, 'best_model2.pth'))
+        torch.save(checkpoint, os.path.join(config.save_dir, 'best_model.pth'))
     else:
         torch.save(checkpoint, os.path.join(config.save_dir, f'checkpoint_epoch_{epoch+1}.pth'))
 
@@ -491,7 +491,7 @@ def train_model(mode='feature'):
     """训练模型的主函数"""
     # 加载配置
     config = Config()
-    config.train_mode = mode
+    config.set_mode(mode)  # 设置模式并更新路径
     
     # 设置随机种子
     torch.manual_seed(config.seed)
@@ -506,6 +506,8 @@ def train_model(mode='feature'):
     # 设置日志
     logger = setup_logger(config.log_dir)
     logger.info(f"Starting training in {config.train_mode} mode")
+    logger.info(f"Logs will be saved to: {config.log_dir}")
+    logger.info(f"Checkpoints will be saved to: {config.save_dir}")
     
     # 如果使用渐进式权重调整，生成并保存权重调度可视化
     if config.use_progressive_weights:

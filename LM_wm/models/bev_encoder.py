@@ -1,103 +1,139 @@
+# TODO: 修改feature学习的模型，按照WM_dino的方式修改现有模型
 import torch
 import torch.nn as nn
-from transformers import AutoImageProcessor, Dinov2Model, AutoModel
+from transformers import AutoImageProcessor, AutoModel
 import torchvision
 from torch.optim import AdamW
 
-class BEVEncoder(nn.Module):
-    def __init__(self, device=None):
+# 编码解码任务头（提升任务模型的可解释性）
+
+class DINOEncoder(nn.Module):
+    """DINOv2特征编码器"""
+    def __init__(self, device):
         super().__init__()
-        self.device = device if device is not None else torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = device
+        self.processor = AutoImageProcessor.from_pretrained("facebook/dinov2-base")
+        self.model = AutoModel.from_pretrained("facebook/dinov2-base").to(device)
         
-        # 初始化DINOv2模型和处理器
-        self.processor = AutoImageProcessor.from_pretrained("facebook/dinov2-base", do_rescale=False,use_fast=True)
-        self.encoder = Dinov2Model.from_pretrained("facebook/dinov2-base").to(self.device)
-        
-        # 冻结预训练模型参数
-        for param in self.encoder.parameters():
+        # 冻结DINOv2参数
+        for param in self.model.parameters():
             param.requires_grad = False
+    
+    def forward(self, image):
+        """编码图像"""
+        # 确保图像在正确的设备上
+        image = image.to(self.device)
+        
+        if len(image.shape) == 4:  # (B, C, H, W)
+            B, C, H, W = image.shape
+            encodings = []
+            for i in range(B):
+                single_image = image[i]
+                single_image = single_image.permute(1, 2, 0)
+                single_image = (single_image * 255).byte()
+                single_image = single_image.cpu().numpy()
+                
+                inputs = self.processor(images=single_image, return_tensors="pt")
+                pixel_values = inputs['pixel_values'].to(self.device)
+                
+                with torch.no_grad():
+                    outputs = self.model(pixel_values)
+                
+                encodings.append(outputs.last_hidden_state[:, 0, :])
             
-        # 设置输出维度
-        self.output_dim = self.encoder.config.hidden_size
+            return torch.cat(encodings, dim=0)
+        else:  # (C, H, W)
+            image = image.permute(1, 2, 0)
+            image = (image * 255).byte()
+            image = image.cpu().numpy()
             
-    def forward(self, images):
-        """
-        编码BEV图像
-
-        Args:
-            images (torch.Tensor): 形状为 (batch_size, seq_len, channels, height, width) 的图像序列
-                                或 (batch_size, channels, height, width) 的单个图像
-
-        Returns:
-            torch.Tensor: 编码后的特征
-        """
-        # 检查输入维度
-        if len(images.shape) == 5:  # 序列数据
-            batch_size, seq_len, channels, height, width = images.shape
-            # 重塑为 (batch_size * seq_len, channels, height, width)
-            images = images.reshape(-1, channels, height, width)
-        elif len(images.shape) == 4:  # 单个图像
-            batch_size, channels, height, width = images.shape
-            seq_len = 1
-        else:
-            raise ValueError(f"Invalid image shape. Expected 4 or 5 dimensions, but got {len(images.shape)}")
-        
-        # 准备输入
-        inputs = self.processor(images, return_tensors="pt", do_rescale=False)
-        pixel_values = inputs['pixel_values'].to(self.device)
-        
-        # 获取特征
-        outputs = self.encoder(pixel_values)
-        
-        # 使用CLS token作为图像特征
-        features = outputs.last_hidden_state[:, 0]  # (batch_size * seq_len, hidden_size)
-        
-        # 如果是序列数据，重塑回 (batch_size, seq_len, hidden_size)
-        if seq_len > 1:
-            features = features.reshape(batch_size, seq_len, -1)
+            inputs = self.processor(images=image, return_tensors="pt")
+            pixel_values = inputs['pixel_values'].to(self.device)
             
-        return features
+            with torch.no_grad():
+                outputs = self.model(pixel_values)
+            
+            return outputs.last_hidden_state[:, 0, :]
 
-class ActionEncoder(nn.Module):
-    def __init__(self, input_dim, hidden_dim=256, device=None):
+class FeatureEncoder(nn.Module):
+    """特征编码器"""
+    def __init__(self, input_dim, hidden_dim):
         super().__init__()
-        self.device = device if device is not None else torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.hidden_dim = hidden_dim
-        
         self.encoder = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
             nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim)
-        ).to(self.device)
-        
-    def forward(self, actions):
-        """
-        编码动作序列
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU()
+        )
+    
+    def forward(self, x):
+        return self.encoder(x)
 
-        Args:
-            actions (torch.Tensor): 形状为 (batch_size, seq_len, action_dim) 的动作张量
-
-        Returns:
-            torch.Tensor: 编码后的特征
-        """
-        batch_size, seq_len, _ = actions.shape
-        actions_flat = actions.reshape(batch_size * seq_len, -1)
-        features = self.encoder(actions_flat)
-        return features.reshape(batch_size, seq_len, self.hidden_dim)
-
-class BEVPredictor(nn.Module):
-    """BEV预测器"""
-    def __init__(self, bev_dim: int, action_dim: int, hidden_dim: int, device: str = 'cuda'):
+class ActionEncoder(nn.Module):
+    """动作编码器"""
+    def __init__(self, action_dim, hidden_dim):
         super().__init__()
-        self.device = device
+        self.encoder = nn.Sequential(
+            nn.Linear(action_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU()
+        )
+    
+    def forward(self, x):
+        return self.encoder(x)
+
+class FeaturePredictor(nn.Module):
+    """特征预测器"""
+    def __init__(self, input_dim, hidden_dim, output_dim):
+        super().__init__()
+        self.predictor = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, output_dim)
+        )
+    
+    def forward(self, x):
+        return self.predictor(x)
+
+class PolicyPredictor(nn.Module):
+    """基于时空注意力的策略预测器，用于实现 p_θ(enc_θ(o_{t-H:t}), φ(a_{t-H:t}))
+    
+    结构:
+    1. 时空注意力机制处理观察序列
+    2. 动作编码处理
+    3. 特征融合和预测
+    """
+    def __init__(self, input_dim, hidden_dim, output_dim):
+        super().__init__()
+        self.hidden_dim = hidden_dim
         
-        # 特征压缩器
-        self.feature_compressor = nn.Sequential(
-            nn.Linear(bev_dim + action_dim, hidden_dim),
+        # 特征转换层 - 将输入维度转换为hidden_dim
+        self.feature_transform = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),  # 输入维度应该是dino_dim
+            nn.LayerNorm(hidden_dim),
             nn.ReLU()
         )
         
-        # LSTM层
+        # 时间注意力 - 捕捉时序依赖
+        self.temporal_attention = nn.MultiheadAttention(
+            embed_dim=hidden_dim,
+            num_heads=8,
+            dropout=0.1,
+            batch_first=True
+        )
+        
+        # 空间注意力 - 捕捉空间依赖
+        self.spatial_attention = nn.MultiheadAttention(
+            embed_dim=hidden_dim,
+            num_heads=8,
+            dropout=0.1,
+            batch_first=True
+        )
+        
+        # 时序处理
         self.lstm = nn.LSTM(
             input_size=hidden_dim,
             hidden_size=hidden_dim,
@@ -106,43 +142,71 @@ class BEVPredictor(nn.Module):
             dropout=0.1
         )
         
-        # 输出层
-        self.output_layer = nn.Sequential(
-            nn.Linear(hidden_dim, bev_dim),
-            nn.LayerNorm(bev_dim)
+        # 特征融合层 - 将hidden_dim转换为output_dim
+        self.fusion = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, output_dim)
         )
         
-    def forward(self, bev_features: torch.Tensor, action_features: torch.Tensor) -> torch.Tensor:
+        # Layer Norms
+        self.norm1 = nn.LayerNorm(hidden_dim)
+        self.norm2 = nn.LayerNorm(hidden_dim)
+        
+    def forward(self, history_encodings, action_encodings):
         """
-        预测下一帧的BEV特征
-
         Args:
-            bev_features (torch.Tensor): BEV特征 [batch_size, history_steps, bev_dim]
-            action_features (torch.Tensor): 动作特征 [batch_size, history_steps, action_dim]
-
+            history_encodings: 历史观察序列的编码 [batch_size, seq_len, dino_dim]
+            action_encodings: 动作序列编码 [batch_size, seq_len, hidden_dim]
+            
         Returns:
-            torch.Tensor: 预测的下一帧BEV特征 [batch_size, bev_dim]
+            pred_encoding: 预测的下一个观察的编码
+            attention_info: 注意力权重信息，用于可视化
         """
-        # 确保输入在正确的设备上
-        bev_features = bev_features.to(self.device)
-        action_features = action_features.to(self.device)
+        batch_size, seq_len, _ = history_encodings.shape
         
-        # 组合特征
-        combined_features = torch.cat([bev_features, action_features], dim=-1)
+        # 1. 特征转换 - 只转换历史编码
+        history_features = self.feature_transform(history_encodings)  # [B, T, H]
         
-        # 压缩特征维度
-        compressed_features = self.feature_compressor(combined_features)
+        # 2. 时间注意力处理观察序列
+        temporal_out, temporal_weights = self.temporal_attention(
+            history_features, 
+            history_features, 
+            history_features
+        )
+        temporal_features = self.norm1(history_features + temporal_out)
         
-        # LSTM处理
-        lstm_out, _ = self.lstm(compressed_features)
+        # 3. LSTM处理时序信息
+        lstm_out, _ = self.lstm(temporal_features)
         
-        # 只使用最后一个时间步的输出
-        last_features = lstm_out[:, -1, :]
+        # 4. 空间注意力
+        # 重塑特征以应用空间注意力
+        spatial_features = lstm_out.reshape(batch_size * seq_len, -1, self.hidden_dim)
+        spatial_out, spatial_weights = self.spatial_attention(
+            spatial_features, spatial_features, spatial_features
+        )
+        spatial_features = self.norm2(spatial_features + spatial_out)
         
-        # 生成预测
-        prediction = self.output_layer(last_features)
+        # 重塑回原始维度
+        spatial_features = spatial_features.reshape(batch_size, seq_len, -1)
         
-        return prediction
+        # 5. 特征融合
+        # 使用最后一个时间步的特征和动作
+        final_temporal = spatial_features[:, -1]  # [B, H]
+        final_action = action_encodings[:, -1]    # [B, H]
+        
+        # 连接特征并生成预测
+        combined = torch.cat([final_temporal, final_action], dim=-1)
+        pred_encoding = self.fusion(combined)
+        
+        # 返回预测和注意力信息
+        attention_info = {
+            'temporal_attention': temporal_weights,
+            'spatial_attention': spatial_weights.reshape(batch_size, seq_len, -1)
+        }
+        
+        return pred_encoding, attention_info
 
 class UNetDecoder(nn.Module):
     def __init__(self, input_dim, hidden_dims=[256, 128, 64, 32, 16], output_channels=3):
@@ -397,97 +461,6 @@ class WeightedMSELoss(nn.Module):
         
         return weighted_mse.mean()
 
-class DINOEncoder(nn.Module):
-    """DINOv2特征编码器"""
-    def __init__(self, device):
-        super().__init__()
-        self.device = device
-        self.processor = AutoImageProcessor.from_pretrained("facebook/dinov2-base")
-        self.model = AutoModel.from_pretrained("facebook/dinov2-base").to(device)
-        
-        # 冻结DINOv2参数
-        for param in self.model.parameters():
-            param.requires_grad = False
-    
-    def forward(self, image):
-        """编码图像"""
-        # 确保图像在正确的设备上
-        image = image.to(self.device)
-        
-        if len(image.shape) == 4:  # (B, C, H, W)
-            B, C, H, W = image.shape
-            encodings = []
-            for i in range(B):
-                single_image = image[i]
-                single_image = single_image.permute(1, 2, 0)
-                single_image = (single_image * 255).byte()
-                single_image = single_image.cpu().numpy()
-                
-                inputs = self.processor(images=single_image, return_tensors="pt")
-                pixel_values = inputs['pixel_values'].to(self.device)
-                
-                with torch.no_grad():
-                    outputs = self.model(pixel_values)
-                
-                encodings.append(outputs.last_hidden_state[:, 0, :])
-            
-            return torch.cat(encodings, dim=0)
-        else:  # (C, H, W)
-            image = image.permute(1, 2, 0)
-            image = (image * 255).byte()
-            image = image.cpu().numpy()
-            
-            inputs = self.processor(images=image, return_tensors="pt")
-            pixel_values = inputs['pixel_values'].to(self.device)
-            
-            with torch.no_grad():
-                outputs = self.model(pixel_values)
-            
-            return outputs.last_hidden_state[:, 0, :]
-
-class FeatureEncoder(nn.Module):
-    """特征编码器"""
-    def __init__(self, input_dim, hidden_dim):
-        super().__init__()
-        self.encoder = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU()
-        )
-    
-    def forward(self, x):
-        return self.encoder(x)
-
-class ActionEncoder(nn.Module):
-    """动作编码器"""
-    def __init__(self, action_dim, hidden_dim):
-        super().__init__()
-        self.encoder = nn.Sequential(
-            nn.Linear(action_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU()
-        )
-    
-    def forward(self, x):
-        return self.encoder(x)
-
-class FeaturePredictor(nn.Module):
-    """特征预测器"""
-    def __init__(self, input_dim, hidden_dim, output_dim):
-        super().__init__()
-        self.predictor = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, output_dim)
-        )
-    
-    def forward(self, x):
-        return self.predictor(x)
-
 class BEVPredictionModel(nn.Module):
     def __init__(self, action_dim, history_steps, hidden_dim, device, mode='feature',
                 road_weight=3.0, vehicle_weight=15.0, boundary_weight=0.01,
@@ -501,15 +474,29 @@ class BEVPredictionModel(nn.Module):
         self.road_weight = road_weight
         self.vehicle_weight = vehicle_weight
         self.boundary_weight = boundary_weight
-        self.other_losses_weight = other_losses_weight  # 添加对other_losses的权重控制
+        self.other_losses_weight = other_losses_weight
         self.weight_schedule = weight_schedule
         self.current_epoch = current_epoch
         
+        # DINOv2输出维度
+        self.dino_dim = 768
+        
         # 初始化各个模块
-        self.dino_encoder = DINOEncoder(device)
-        self.feature_encoder = FeatureEncoder(768, hidden_dim)## MLP
-        self.action_encoder = ActionEncoder(30, hidden_dim)## MLP
-        self.feature_predictor = FeaturePredictor(768 + hidden_dim, hidden_dim, 768)## MLP可以考虑改成上面的LSTM
+        if self.mode == 'feature':
+            self.dino_encoder = DINOEncoder(device)
+            self.action_encoder = ActionEncoder(action_dim, hidden_dim)
+            # 输入维度是DINO特征维度
+            self.policy_predictor = PolicyPredictor(
+                input_dim=self.dino_dim,  # 只使用DINO特征维度
+                hidden_dim=hidden_dim,
+                output_dim=self.dino_dim
+            )
+        
+        if self.mode == 'image':
+            self.dino_encoder = DINOEncoder(device)
+            self.feature_encoder = FeatureEncoder(self.dino_dim, hidden_dim)
+            self.action_encoder = ActionEncoder(action_dim, hidden_dim)
+            self.feature_predictor = FeaturePredictor(self.dino_dim + hidden_dim, hidden_dim, self.dino_dim)
         
         # 特征损失函数
         self.feature_loss_fn = nn.MSELoss()
@@ -517,11 +504,10 @@ class BEVPredictionModel(nn.Module):
         # 如果是图像生成模式，初始化图像解码器和相关损失函数
         if mode == 'image':
             self.image_decoder = UNetDecoder(
-                input_dim=768,
+                input_dim=self.dino_dim,
                 hidden_dims=[256, 128, 64, 32, 16],
                 output_channels=3
             )
-            # 使用自定义的带权重的损失函数，支持渐进式权重调整
             self.image_loss_fn = WeightedMSELoss(
                 road_weight=self.road_weight,
                 vehicle_weight=self.vehicle_weight,
@@ -567,31 +553,30 @@ class BEVPredictionModel(nn.Module):
         history_encodings = []
         for t in range(self.history_steps):
             frame = bev_frames[:, t]
-            encoding = self.dino_encoder(frame)
+            encoding = self.dino_encoder(frame)  # [B, dino_dim]
             history_encodings.append(encoding)
         
         # 堆叠历史编码
-        history_encodings = torch.stack(history_encodings, dim=1)
+        history_encodings = torch.stack(history_encodings, dim=1)  # [B, T, dino_dim]
         
         # 编码动作
         batch_size, seq_len, _ = actions.shape
-        actions_flat = actions.reshape(-1, 30)
-        action_encodings = self.action_encoder(actions_flat)
-        action_encodings = action_encodings.reshape(batch_size, seq_len, -1)
-        
-        # 连接特征————没有使用LSTM，feature_predictor可以考虑改成LSTM
-        combined_features = torch.cat([history_encodings[:, -1], action_encodings[:, -1]], dim=-1)
-        
-        # 预测下一帧特征
-        pred_features = self.feature_predictor(combined_features)
+        actions_flat = actions.reshape(-1, actions.size(-1))
+        action_encodings = self.action_encoder(actions_flat)  # [B*T, hidden_dim]
+        action_encodings = action_encodings.reshape(batch_size, seq_len, -1)  # [B, T, hidden_dim]
         
         # 获取目标特征
-        target_features = self.dino_encoder(next_frame)
+        target_features = self.dino_encoder(next_frame)  # [B, dino_dim]
         
         if self.mode == 'feature':
+            # 使用策略预测器进行特征预测
+            pred_features, attention_info = self.policy_predictor(history_encodings, action_encodings)
+            self.attention_maps = attention_info
             return pred_features, target_features
         else:
             # 图像生成模式
+            combined_features = torch.cat([history_encodings[:, -1], action_encodings[:, -1]], dim=-1)
+            pred_features = self.feature_predictor(combined_features)
             pred_image = self.image_decoder(pred_features)
             return pred_features, target_features, pred_image, next_frame
     

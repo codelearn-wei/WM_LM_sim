@@ -1,3 +1,0 @@
-2025-03-27 12:41:06,074 - BEVPrediction - INFO - 开始预测，使用模型检查点: LM_wm/checkpoints\best_model.pth
-2025-03-27 12:41:28,660 - BEVPrediction - INFO - 预测样本 5
-2025-03-27 12:41:33,392 - BEVPrediction - INFO - 预测完成，结果保存在: LM_wm/predictions\sample_5

@@ -239,7 +239,7 @@ def batch_predict(model, test_loader, config, output_dir):
             target_np = np.clip(target_np * 255, 0, 255).astype(np.uint8)
             cv2.imwrite(os.path.join(sample_dir, "target.png"), cv2.cvtColor(target_np, cv2.COLOR_RGB2BGR))
 
-def predict_main_func(checkpoint_path=None, data_dir=None, output_dir="LM_wm/predictions", batch_size=4, sample_idx=None):
+def predict_main_func(checkpoint_path=None, data_dir=None, output_dir="LM_wm/logs/predictions", batch_size=4, sample_idx=None):
     """
     预测功能的主入口函数，专为在main函数中调用设计
     
@@ -260,7 +260,7 @@ def predict_main_func(checkpoint_path=None, data_dir=None, output_dir="LM_wm/pre
     
     # 加载配置
     config = Config()
-    config.train_mode = 'image'  # 使用图像模式
+    config.set_mode('image')  # 使用图像模式
     
     # 使用默认的最佳模型路径（如果未指定）
     if checkpoint_path is None:
@@ -268,18 +268,29 @@ def predict_main_func(checkpoint_path=None, data_dir=None, output_dir="LM_wm/pre
         if not os.path.exists(checkpoint_path):
             raise FileNotFoundError(f"找不到模型检查点: {checkpoint_path}")
     
-    # 创建输出目录
-    os.makedirs(output_dir, exist_ok=True)
+    # 创建模式特定的输出目录
+    mode_output_dir = os.path.join(output_dir, f"predictions_{config.train_mode}")
+    os.makedirs(mode_output_dir, exist_ok=True)
     
     # 设置日志
-    logger = setup_logger(output_dir)
+    logger = setup_logger(mode_output_dir)
     logger.info(f"开始预测，使用模型检查点: {checkpoint_path}")
+    logger.info(f"预测结果将保存到: {mode_output_dir}")
     
     # 加载模型
     model = load_model(checkpoint_path, config)
     
     # 加载测试数据集
     test_dataset = load_test_dataset(config, data_dir)
+    
+    # 创建测试数据加载器
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=2,
+        pin_memory=True
+    )
     
     # 如果指定了样本索引，则只预测该样本
     if sample_idx is not None:
@@ -290,7 +301,7 @@ def predict_main_func(checkpoint_path=None, data_dir=None, output_dir="LM_wm/pre
         sample = test_dataset[sample_idx]
         
         # 创建样本输出目录
-        sample_dir = os.path.join(output_dir, f"sample_{sample_idx}")
+        sample_dir = os.path.join(mode_output_dir, f"sample_{sample_idx}")
         
         # 预测单个样本
         logger.info(f"预测样本 {sample_idx}")
@@ -299,25 +310,16 @@ def predict_main_func(checkpoint_path=None, data_dir=None, output_dir="LM_wm/pre
         logger.info(f"预测完成，结果保存在: {sample_dir}")
         print(f"\n单样本预测完成! 结果已保存至: {sample_dir}")
     else:
-        # 创建测试数据加载器
-        test_loader = DataLoader(
-            test_dataset,
-            batch_size=batch_size,
-            shuffle=False,
-            num_workers=2,
-            pin_memory=True
-        )
-        
         # 批量预测
         logger.info(f"开始批量预测 {len(test_dataset)} 个样本")
-        batch_predict(model, test_loader, config, output_dir)
+        batch_predict(model, test_loader, config, mode_output_dir)
         
-        logger.info(f"批量预测完成，结果保存在: {output_dir}")
+        logger.info(f"预测完成，结果已保存到: {mode_output_dir}")
         print(f"\n批量预测完成! 共处理 {len(test_dataset)} 个样本")
-        print(f"结果已保存至: {output_dir}")
+        print(f"结果已保存至: {mode_output_dir}")
     
     print("\n" + "="*50)
-    return
+    return mode_output_dir
 
 def predict_model(checkpoint_path=None, data_dir=None, output_dir="LM_wm/predictions", batch_size=4, sample_idx=None):
     """
