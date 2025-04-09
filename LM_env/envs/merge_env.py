@@ -11,7 +11,7 @@ from LM_env.interaction_model.Initializer import SimulationInitializer
 from LM_env.interaction_model.strategy import StrategyManager
 
 # TODO:仿真器搭建还有以下工作（已完成主体函数框架）：
-# 1、StrategyManager类，现在是简单的策略，需要建模汇入场景的环境，实现基于交互的策略。（重点，难点。考虑数据分布，决策价值观，世界模型的建立和群体收益等）
+# 1、StrategyManager类，现在是简单的IDM策略，需要建模汇入场景的环境，实现基于交互的策略。（重点，难点。考虑数据分布，决策价值观，世界模型的建立和群体收益等）
 
 # 2、仿真器的初始化函数，需要根据场景初始化主车和环境车辆的状态，包括位置，速度，航向等。（主要结合数据分布去构建，考虑初始位置生成的合理性）
 
@@ -72,29 +72,54 @@ class MergeEnv(gym.Env):
             self.static_map_data['main_road_avg_trajectory']['x_coords'],
             self.static_map_data['main_road_avg_trajectory']['y_coords']
         )))
+        self.aux_reference_line = np.array(list(zip(
+            self.static_map_data['aux_reference_lanes']['x_coords'],
+            self.static_map_data['aux_reference_lanes']['y_coords']
+        )))
         self._fit_reference_spline()
         
-        # Vehicle management
+        # 车辆状态更新和管理
         self.vehicles = {}
         self.next_vehicle_id = 0
         self.ego_vehicle_id = None
         self.vehicle_model = VehicleKinematicsModel()
         
-        # Strategy for other vehicles
+        # TODO：为建立更真实的仿真环境，需要设计车辆的初始化分布和交互模型
+        # 环境车辆初始化
+        self.initializer = SimulationInitializer(self.static_map_data)
+        
+        # 车辆参数初始化,需要更复杂的符合驾驶人行为建模的参数
+        
+        self.ego_config = {
+             'position_index': 1000,
+                'velocity': 10.0,
+                'length': 5.0,
+                'width': 2.0,
+                'lane': 1,
+                'attributes': {'is_ego': True}  
+        }
+
+        self.env_vehicles_configs = {
+            'num_vehicles': 5,
+            'velocity_range': (5, 6),
+            'length_range': (4.0, 5),
+            'width_range': (1.8, 2.2),
+            'vehicle_spacing': 1.0,  # 数字越大表示生成车辆越稀疏
+            'attributes': {'is_ego': False}
+        }
         self.strategy_manager = StrategyManager()
         self.strategy_func = self.strategy_manager.get_strategy(other_vehicle_strategy)
         
-        # Initializer for simulation states
-        self.initializer = SimulationInitializer(self.static_map_data)
         
-        # Define action and observation spaces
+        # TODO：后续可能需要考虑更改动作空间维度
         # Action: [acceleration, steering_angle]
         self.action_space = spaces.Box(
-            low=np.array([-5.0, -0.5]),  # Min acceleration and steering angle
-            high=np.array([5.0, 0.5]),   # Max acceleration and steering angle
+            low=np.array([-1, -1]),  # Min acceleration and steering angle
+            high=np.array([1, 1]),   # Max acceleration and steering angle
             dtype=np.float32
         )
         
+        # TODO:后续可能需要考虑更改观测空间维度
         max_vehicles_observed = 5  # Maximum number of surrounding vehicles to observe
         obs_dim = 4 + max_vehicles_observed * 4  # 4 for ego vehicle + 4 features per surrounding vehicle
         
@@ -106,7 +131,7 @@ class MergeEnv(gym.Env):
         if render_mode is not None:
             self._setup_rendering()
     
-    def reset(self, seed=None, options=None,ego_config = {} , env_vehicles_configs = {}):
+    def reset(self, seed=None, options=None):
         """
         Reset the environment to an initial state.
         
@@ -119,6 +144,8 @@ class MergeEnv(gym.Env):
             info: Additional information
         """
         super().reset(seed=seed)
+        if seed is not None:
+            np.random.seed(seed)
         self.current_step = 0
         
         # Clear existing vehicles
@@ -126,7 +153,7 @@ class MergeEnv(gym.Env):
         self.next_vehicle_id = 0
         
         # Get initial states from initializer
-        ego_init_state, env_vehicles_init_states = self.initializer.get_simulation_init_states(ego_config ,env_vehicles_configs)
+        ego_init_state, env_vehicles_init_states = self.initializer.get_simulation_init_states(self.ego_config ,self.env_vehicles_configs)
         
         # Add ego vehicle
         # TODO:如何生成多辆主车？？？
@@ -167,81 +194,63 @@ class MergeEnv(gym.Env):
         
         return observation, info
     
-    def delete_vehicle(self):
-        """如果车辆已经到达终点，删除该车辆"""
-        to_delete = []  # 用于存储需要删除的车辆键
-        # 遍历字典，找出满足条件的车辆
+    def delete_env_vehicle(self):
+        to_delete = []
         for vid, vehicle in self.vehicles.items():
-            if vehicle.position[0] < 1030:  # 判断条件
-                to_delete.append(vid)  # 将满足条件的车辆键添加到列表
-        # 根据收集的键逐个删除
+            if vid != self.ego_vehicle_id and vehicle.position[0] < 1030:
+                to_delete.append(vid)
         for vid in to_delete:
-            del self.vehicles[vid]  # 从字典中删除对应的车辆
+            del self.vehicles[vid]
     
     def step(self, ego_action):
-        """
-        Take a step in the environment with the given action.
-        
-        Args:
-            action: [acceleration, steering_angle] for ego vehicle
-            
-        Returns:
-            observation: New observation after action
-            reward: Reward for the action
-            terminated: Whether the episode is terminated
-            truncated: Whether the episode is truncated (e.g., max steps reached)
-            info: Additional information
-        """
         self.current_step += 1
         # 分发环境车辆获得的观测
         obs_for_other_vehicles = self.distrub_env_obs()
-        
         # 利用定义的World_Model选择环境车辆的动作
         env_actions = self.strategy_func(obs_for_other_vehicles)
         for vid, action in env_actions.items():
-            if vid in self.vehicles :
+            if vid in self.vehicles:
                 vehicle = self.vehicles[vid]
                 acceleration = action[0]
                 steering_angle = action[1]
                 self.vehicle_model.update(vehicle, acceleration, steering_angle, self.dt)
-        self.delete_vehicle()  # 删除已经到达终点的车辆
-        observation = np.empty(0)
-        reward = 0
+        self.delete_env_vehicle()  # 删除已经到达终点的车辆
+        
+        # 默认返回值
+        observation = np.zeros(self.observation_space.shape, dtype=np.float32)  # 填充零值
+        reward = 0.0
         terminated = False
         truncated = False
         info = {}
         
-        ## 判断是否加入主车
-        if self.ego_vehicle_id != None:
+        # 如果有主车，更新其状态并计算观测和奖励
+        if self.ego_vehicle_id is not None:
             ego_vehicle = self.vehicles[self.ego_vehicle_id]
             acceleration = float(ego_action[0])
             steering_angle = float(ego_action[1])
             self.vehicle_model.update(ego_vehicle, acceleration, steering_angle, self.dt)
-            #  获得主车的观测
+            
+            # 获得主车观测
             observation = self._get_observation()
-            
-            # 计算主车获得的奖励
+            # 计算主车奖励
             reward = self._calculate_reward()
-            
-            # Check if episode is terminated (collision or off-road)
+            # 检查终止条件
             terminated = self._check_termination()
-            # terminated = False
             
-            # Check if episode is truncated (max steps reached)
+            # 回合阶段条件
             truncated = self.current_step >= self.max_episode_steps
-            
-            # Additional info
+            # 额外信息汇总
             info = {
                 'current_step': self.current_step,
                 'ego_position': ego_vehicle.position.tolist(),
                 'ego_velocity': ego_vehicle.velocity.tolist(),
                 'ego_heading': ego_vehicle.heading
             }
-            # 检测环境状态
-            env_status = self.check_environment_status()
-            print(f" Environment Status: {env_status}")
+            
+            # 监测环境状态
+            env_status = self._check_environment_status()
+            # print(f" Environment Status: {env_status}")
         
-        # Render if needed
         if self.render_mode == "human":
             self._render_frame()
         
@@ -338,9 +347,11 @@ class MergeEnv(gym.Env):
         """
         Convert the current state into an observation for the RL agent
         """
-        # Get ego vehicle state
+        # Initialize empty observation
         obs = []
-        if self.ego_vehicle_id == 0:
+        
+        # Check if ego vehicle exists
+        if hasattr(self, 'ego_vehicle_id') and self.ego_vehicle_id in self.vehicles:
             ego_vehicle = self.vehicles[self.ego_vehicle_id]
             ego_x, ego_y = ego_vehicle.position
             ego_heading = ego_vehicle.heading
@@ -354,13 +365,15 @@ class MergeEnv(gym.Env):
             for vid, vehicle in self.vehicles.items():
                 if vid != self.ego_vehicle_id:
                     # Calculate relative position and velocity
-                    rel_pos = vehicle.position - ego_vehicle.position
-                    rel_vel = vehicle.velocity - ego_vehicle.velocity
+                    rel_pos_x = vehicle.position[0] - ego_vehicle.position[0]
+                    rel_pos_y = vehicle.position[1] - ego_vehicle.position[1]
+                    rel_vel_x = vehicle.velocity[0] - ego_vehicle.velocity[0]
+                    rel_vel_y = vehicle.velocity[1] - ego_vehicle.velocity[1]
                     
                     # Calculate distance
-                    distance = np.linalg.norm(rel_pos)
+                    distance = np.sqrt(rel_pos_x**2 + rel_pos_y**2)
                     
-                    surrounding_vehicles.append((distance, rel_pos[0], rel_pos[1], rel_vel[0], rel_vel[1]))
+                    surrounding_vehicles.append((distance, rel_pos_x, rel_pos_y, rel_vel_x, rel_vel_y))
             
             # Sort by distance and take closest vehicles
             surrounding_vehicles.sort()
@@ -375,6 +388,10 @@ class MergeEnv(gym.Env):
                 else:
                     # Pad with zeros if we have fewer vehicles than the maximum
                     obs.extend([0.0, 0.0, 0.0, 0.0])
+        else:
+            # If there's no ego vehicle, return a zero-filled observation
+            obs_size = self.observation_space.shape[0]
+            obs = [0.0] * obs_size
         
         return np.array(obs, dtype=np.float32)
     
@@ -386,11 +403,26 @@ class MergeEnv(gym.Env):
         return reward
         
     
+    # 检测终止条件
     def _check_termination(self):
         """Check if episode should terminate (collision or off-road)"""
         ego_is_collision , _ = self._check_ego_collision()
-        return ego_is_collision or self._check_ego_off_road()
+        ego_off_road = self._check_ego_off_road()
+        ego_reach_end = self._check_reach_end()
+        return ego_is_collision or ego_reach_end or ego_off_road
     
+    
+    # 检测主车是否到达终点
+    def _check_reach_end(self):
+        """Check if ego vehicle has reached the end of the road"""
+        if self.ego_vehicle_id is not None:
+            ego_vehicle = self.vehicles[self.ego_vehicle_id]
+            # 设计目标终点（应该是一个x，y的范围）
+            if 1032 < ego_vehicle.position[0] < 1035 & 0 < ego_vehicle.position[1] < 2:
+                return True
+        return False
+    
+
     ##############################################
     #############碰撞检测与环境监测################
     #############################################
@@ -499,7 +531,7 @@ class MergeEnv(gym.Env):
         return distance_to_ref > road_width_threshold
 
     # 添加一个综合检测函数，在仿真中监测环境状态
-    def check_environment_status(self):
+    def _check_environment_status(self):
         """
         综合检测环境状态，包括车辆碰撞和道路边界情况，同时包含主车的状态
         
@@ -588,10 +620,13 @@ class MergeEnv(gym.Env):
         upper_points = self.map_dict['upper_boundary']
         lower_points = self.map_dict['main_lower_boundary'][::-1]
         road_points = np.vstack((upper_points, lower_points))
+        
         self.road_pixel_points = [self.map_to_pixel(x, y) for x, y in road_points]
         self.upper_pixel_points = [self.map_to_pixel(x, y) for x, y in self.map_dict['upper_boundary']]
         self.lower_pixel_points = [self.map_to_pixel(x, y) for x, y in self.map_dict['main_lower_boundary']]
         self.reference_pixel_points = [self.map_to_pixel(x, y) for x, y in self.smooth_reference_line]
+        self.aux_reference_pixel_points = [self.map_to_pixel(x, y) for x, y in self.aux_reference_line]
+        
         if 'auxiliary_dotted_line' in self.map_dict:
             self.auxiliary_dotted_line_pixel_points = [self.map_to_pixel(x, y) for x, y in self.map_dict['auxiliary_dotted_line']]
         else:
@@ -621,6 +656,7 @@ class MergeEnv(gym.Env):
         
         # Draw reference line
         pygame.draw.lines(self.screen, (0, 0, 0), False, self.reference_pixel_points, 1)
+        pygame.draw.lines(self.screen, (0, 0, 0), False, self.aux_reference_pixel_points, 1)
         
         # Draw dotted line if exists
         if self.auxiliary_dotted_line_pixel_points:
@@ -717,36 +753,24 @@ def make_env(map_path="LM_env/LM_map/LM_static_map.pkl", render_mode=None, max_e
     )
     return env
 
+
+
 if __name__ == "__main__":
 
     render_mode = 'human' 
     episodes = 100
     max_steps = 500 
+    env = make_env(render_mode=render_mode)
     for i in range(episodes):
-        ender_mode = 'human' 
-        env = make_env(render_mode=render_mode)
+
+        
         # 定义reset函数的输入
         # TODO：交通状态（主道车辆的状态）
         # TODO：社会化函数（主道车辆的策略参数）
         # TODO：进一步对主车进行设置
-        ego_config = {
-            #  'position_index': 2,
-            #     'velocity': 10.0,
-            #     'length': 5.0,
-            #     'width': 2.0,
-            #     'lane': 1,
-            #     'attributes': {'is_ego': True}  
-        }
+        
 
-        env_vehicles_configs = {
-            'num_vehicles': 10,
-            'velocity_range': (5, 6),
-            'length_range': (4.0, 5),
-            'width_range': (1.8, 2.2),
-            'vehicle_spacing': 1.0,  # 数字越大表示生成车辆越稀疏
-            'attributes': {'is_ego': False}
-        }
-        observation, info = env.reset(ego_config = ego_config , env_vehicles_configs = env_vehicles_configs)  
+        observation, info = env.reset()  
             
         for i in range(max_steps):   
             #TODO： 接入强化学习主车动作选择      

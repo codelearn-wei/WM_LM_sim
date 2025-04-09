@@ -1,7 +1,7 @@
 import numpy as np
 from LM_env.interaction_model.vehicle_model import Vehicle
 
-
+# TODO: 初始化策略需要大幅度的修改
 class SimulationInitializer:
     def __init__(self, static_map, n_lanes=3, lane_width=3.5, min_point_spacing=8.0):
         """

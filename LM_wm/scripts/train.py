@@ -176,15 +176,7 @@ def validate(model, val_loader, config, epoch=None):
             else:
                 pred_features, target_features, pred_image, next_frame = model(bev_frames, actions, next_frame)
                 loss = model.compute_loss(pred_features, target_features, pred_image, next_frame, road_mask)
-                
-                # 保存每个批次的验证结果可视化
-                # vis_images = visualize_predictions(
-                #     pred_image[:min(4, pred_image.size(0))], 
-                #     next_frame[:min(4, next_frame.size(0))]
-                # )
-                # vis_path = os.path.join(viz_dir, f'val_predictions_epoch_{epoch}_{timestamp}_batch_{batch_idx}.png')
-                # vis_images.savefig(vis_path)
-                # plt.close(vis_images)
+            
                 
                 # 存储预测和目标图像用于后续对比
                 all_predictions.append(pred_image[:min(4, pred_image.size(0))])
@@ -256,6 +248,34 @@ def validate(model, val_loader, config, epoch=None):
     avg_loss = total_loss / len(val_loader)
     return avg_loss
 
+def validate_feature(model, val_loader, config, epoch):
+    """特征模式的验证函数"""
+    model.eval()
+    total_loss = 0.0
+    
+    with torch.no_grad():
+        for batch_idx, (bev_frames, actions, next_frame) in enumerate(val_loader):
+            # 确保数据在正确的设备上
+            bev_frames = bev_frames.to(config.device)
+            actions = actions.to(config.device)
+            next_frame = next_frame.to(config.device)
+            
+            # 前向传播
+            pred_features, target_features = model(bev_frames, actions, next_frame)
+            
+            # 计算损失
+            loss = model.compute_loss(pred_features, target_features)
+            
+            total_loss += loss.item()
+            
+            # 打印验证进度
+            if (batch_idx + 1) % config.log_interval == 0:
+                print(f"Validation Batch {batch_idx+1}/{len(val_loader)}, Loss: {loss.item():.6f}")
+    
+    # 计算平均损失
+    avg_loss = total_loss / len(val_loader)
+    return avg_loss
+
 def train_feature_mode(model, train_loader, val_loader, optimizer, scheduler, config, logger):
     """特征预测模式训练"""
     best_val_loss = float('inf')
@@ -283,37 +303,56 @@ def train_feature_mode(model, train_loader, val_loader, optimizer, scheduler, co
             next_frame = batch['next_frame'].to(config.device)
             
             # 前向传播
-            pred_features, target_features = model(bev_frames, actions, next_frame)
-            
-            # 计算损失
-            loss = model.compute_loss(pred_features, target_features)
-            
-            # 反向传播
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), config.gradient_clip)
-            optimizer.step()
-            
-            train_loss += loss.item()
-            
-            # 更新进度条
-            pbar.set_postfix({'loss': f'{loss.item():.4f}'})
+            try:
+                pred_features, target_features = model(bev_frames, actions, next_frame)
+                
+                # 计算损失
+                loss = model.compute_loss(pred_features, target_features)
+                
+                # 反向传播
+                loss.backward()
+                
+                # 梯度裁剪
+                torch.nn.utils.clip_grad_norm_(model.parameters(), config.gradient_clip)
+                
+                # 更新参数
+                optimizer.step()
+                
+                # 更新损失
+                train_loss += loss.item()
+                
+                # 更新进度条
+                pbar.set_postfix({'loss': loss.item()})
+            except Exception as e:
+                logger.error(f"前向传播或反向传播时发生错误: {e}")
+                continue
         
-        # 验证阶段
-        val_loss = validate(model, val_loader, config, epoch)
-        logger.info(f'Epoch {epoch+1}, Validation Loss: {val_loss:.4f}')
+        # 计算平均损失
+        if len(train_loader) > 0:
+            train_loss /= len(train_loader)
+            logger.info(f"Epoch {epoch+1}/{config.num_epochs}, Train Loss: {train_loss:.6f}")
         
-        # 保存最佳模型
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            save_checkpoint(model, optimizer, epoch, val_loss, config, is_best=True)
-            patience_counter = 0
-        else:
-            patience_counter += 1
-        
-        # 早停检查
-        if patience_counter >= config.early_stopping_patience:
-            logger.info(f"Early stopping triggered after {epoch+1} epochs")
-            break
+        # 每隔val_interval个epoch进行验证
+        if (epoch + 1) % config.val_interval == 0:
+            try:
+                val_loss = validate_feature(model, val_loader, config, epoch)
+                logger.info(f"Epoch {epoch+1}/{config.num_epochs}, Val Loss: {val_loss:.6f}")
+                
+                # 检查是否需要保存模型
+                if val_loss < best_val_loss:
+                    best_val_loss = val_loss
+                    patience_counter = 0
+                    save_checkpoint(model, optimizer, epoch, train_loss, config, is_best=True)
+                    logger.info(f"New best model saved! Val Loss: {val_loss:.6f}")
+                else:
+                    patience_counter += 1
+                
+                # 检查是否需要早停
+                if patience_counter >= config.early_stopping_patience:
+                    logger.info(f"Early stopping triggered after {epoch+1} epochs")
+                    break
+            except Exception as e:
+                logger.error(f"验证阶段发生错误: {e}")
         
         # 更新学习率
         scheduler.step()

@@ -82,6 +82,8 @@ class Simulator:
         self.current_frame = 0      # 当前帧
         self.vehicle_model = VehicleKinematicsModel() # 车辆运动学模型
         
+        
+        
         # 初始化 Pygame
         pygame.init()
         self.screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
@@ -595,8 +597,10 @@ def main():
         'vehicle_spacing': 1.0,  # 数字越大表示生成车辆越稀疏
         'attributes': {'is_ego': False}
     }
+    
+    #! 初始化的方式需要贴合实际情况
     initializer = SimulationInitializer(static_map[0])
-    # 加载初始化配置文件
+    # 配置
     
     ego_init_state, env_vehicles_init_states = initializer.get_simulation_init_states(ego_config,env_vehicles_configs)
     simulator.reset(ego_init_state, env_vehicles_init_states)

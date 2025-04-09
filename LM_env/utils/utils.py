@@ -15,57 +15,6 @@ from scipy.signal import savgol_filter
 import os 
 import pickle
 
-def _get_frame_data(json_path: str, excel_path: str):
-    """
-    工具函数：处理Excel和JSON文件中的车辆数据，并返回分类后的结果。
-    
-    Args:
-        json_path (str): JSON 文件路径（地图数据）
-        excel_path (str): Excel 文件路径（车辆轨迹数据）
-    
-    Returns:
-        dict: 按帧分类后的车辆数据
-    
-    Raises:
-        FileNotFoundError: 如果输入的文件路径不存在
-        ValueError: 如果文件内容无法正确解析
-    """
-    # 检查文件是否存在
-    if not Path(json_path).exists():
-        raise FileNotFoundError(f"JSON 文件未找到: {json_path}")
-    if not Path(excel_path).exists():
-        raise FileNotFoundError(f"Excel 文件未找到: {excel_path}")
-
-    # 读取 JSON 文件
-    try:
-        with open(json_path, 'r', encoding='utf-8') as f:
-            json_data = json.load(f)
-    except json.JSONDecodeError:
-        raise ValueError(f"无法解析 JSON 文件: {json_path}")
-
-    # 读取 Excel 文件（假设是 CSV 格式，也可以用 pd.read_excel 处理 .xlsx 文件）
-    try:
-        vehicle_data = pd.read_csv(excel_path)
-    except Exception as e:
-        raise ValueError(f"无法读取 Excel 文件: {excel_path}, 错误: {str(e)}")
-
-    # 初始化 LMScene 对象
-    scene = LMScene(json_path, excel_path)
-
-    # 第一步：按帧组织数据
-    x = scene.vehicles
-    frame_data = organize_by_frame(scene.vehicles)
-
-    # 第二步：获取边界数据
-    upper_bd = scene.get_upper_boundary()
-    auxiliary_bd = scene.get_auxiliary_dotted_line()
-
-    # 第三步：分类车辆数据
-    classified_data = classify_vehicles_by_frame_1(frame_data, upper_bd, auxiliary_bd)
-
-    return classified_data
-
-
 
 def _get_vehicle_tra(json_path: str, excel_path: str):
         """
@@ -123,17 +72,6 @@ def _get_vehicle_tra(json_path: str, excel_path: str):
             
         return main_road_vehicles , merge_vehicles , map_dict
 
-def _get_mutli_vehicle_tra(json_path: str, dir_path: str):
-    all_vehicle_tra = {}
-    for csv_file in Path(dir_path).glob("*.csv"):
-        file_name = csv_file.stem
-        main_road_vehicles , merge_vehicles , map_dict = _get_vehicle_tra(json_path, str(csv_file))
-        all_vehicle_tra[file_name] = {
-                'main_road_vehicles': main_road_vehicles,
-                'merge_vehicles': merge_vehicles,
-                'map_dict': map_dict
-            }
-    return all_vehicle_tra
     
 def _calculate_central_trajectory(vehicles_dict, x_threshold=1030):
     """
@@ -303,7 +241,61 @@ def _smooth_trajectory(x_coords, y_coords):
         print(f"平滑处理失败: {e}")
         return np.array(x_coords), np.array(y_coords)
     
-   
+def _calculate_auxiliary_reference_line(map_dict):
+    """
+    计算辅道的参考线，通过在虚线的 x 坐标范围内计算虚线和上边界线的 y 坐标平均值。
+    
+    参数:
+    map_dict (dict): 地图数据字典，包含道路虚线和上边界线
+    
+    返回:
+    dict: 包含辅道参考线的 x_coords 和 y_coords
+    
+    异常:
+    ValueError: 如果地图数据中缺少必要的数据或数据格式不正确
+    """
+    # 定义道路虚线和上边界线的键名（根据实际情况调整）
+    dashed_line_key = 'auxiliary_dotted_line'  # 假设为车道虚线
+    upper_boundary_key = 'upper_boundary'  # 假设为道路上边界
+    
+    # 检查数据是否存在
+    if dashed_line_key not in map_dict or upper_boundary_key not in map_dict:
+        raise ValueError(f"地图数据中缺少 '{dashed_line_key}' 或 '{upper_boundary_key}'")
+    
+    # 获取道路虚线和上边界线数据并转换为 numpy 数组
+    dashed_line = np.array(map_dict[dashed_line_key])
+    upper_boundary = np.array(map_dict[upper_boundary_key])
+    
+    # 检查数据格式
+    if dashed_line.ndim != 2 or upper_boundary.ndim != 2 or dashed_line.shape[1] != 2 or upper_boundary.shape[1] != 2:
+        raise ValueError("道路虚线或上边界线数据格式不正确，应为 (N, 2) 的数组")
+    
+    # 获取虚线的 x 和 y 坐标
+    x_dashed = dashed_line[:, 0]
+    y_dashed = dashed_line[:, 1]
+    
+    # 获取上边界线的 x 和 y 坐标
+    x_upper = upper_boundary[:, 0]
+    y_upper = upper_boundary[:, 1]
+    
+    # 确保虚线的 x 坐标在小到大范围内
+    if not np.all(np.diff(x_dashed) > 0):
+        raise ValueError("虚线的 x 坐标不是严格递增的")
+    
+    # 对上边界线进行插值，使其与虚线的 x 坐标对齐
+    y_upper_interp = np.interp(x_dashed, x_upper, y_upper)
+    
+    # 计算中线的 y 坐标
+    y_mid = (y_dashed + y_upper_interp) / 2
+    
+    # 平滑处理中线
+    smooth_x, smooth_y = _smooth_trajectory(x_dashed, y_mid)
+    
+    # 返回结果，保持输出类型为字典
+    return {
+        'x_coords': smooth_x.tolist(),
+        'y_coords': smooth_y.tolist()
+    }
    
 def _get_static_env(json_path: str, excel_path: str, visualize=False, save_path=None ,x_threshold=1030):
     """
@@ -343,6 +335,7 @@ def _get_static_env(json_path: str, excel_path: str, visualize=False, save_path=
     static_env = {}
     static_env['map_dict'] = map_dict
     static_env['main_road_avg_trajectory'] = main_road_avg_trajectory 
+    static_env['aux_reference_lanes'] = _calculate_auxiliary_reference_line(map_dict)
     return static_env
 
 def _calc_static_map(all_static_env):
@@ -415,6 +408,9 @@ def _calc_static_map(all_static_env):
             'y_coords': smooth_y.tolist()
         }
     
+
+        
+    
     return static_map, all_trajectories, avg_x, avg_y, smooth_x, smooth_y
         
 
@@ -426,6 +422,7 @@ def get_mutli_static_env(json_path: str, dir_path: str):
         all_static_env[file_name] = static_env
     static_map = _calc_static_map(all_static_env) 
     static_map[0]['map_dict'] = static_env['map_dict']
+    static_map[0]['aux_reference_lanes'] = static_env['aux_reference_lanes']
     return  all_static_env , static_map
 
    

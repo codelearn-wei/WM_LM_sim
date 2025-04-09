@@ -31,7 +31,7 @@ class Config:
     def __init__(self):
         # 数据相关配置
         self.data_dir = "LM_wm/training_data"
-        self.batch_size = 64
+        self.batch_size = 128
         self.num_workers = 8
         self.history_steps = 5
         self.max_vehicles = 10 ## 定义最大车辆数量
@@ -44,7 +44,7 @@ class Config:
         self.image_size = IMAGE_SIZE
         
         # 训练相关配置
-        self.num_epochs = 200
+        self.num_epochs = 50
         self.learning_rate = 1e-4
         self.weight_decay = 1e-5
         self.warmup_steps = 500
@@ -213,7 +213,7 @@ class Config:
         schedule[end_epoch] = self.weights["final"].copy()
         
         # 添加中间检查点
-        checkpoint_interval = 10
+        checkpoint_interval = 5
         if epochs_count > checkpoint_interval * 2:
             for epoch in range(self.weight_epochs["start"] + checkpoint_interval, 
                               end_epoch, checkpoint_interval):
@@ -254,7 +254,7 @@ class Config:
         self.update_paths()
         
         # 其他配置
-        self.log_interval = 10
+        self.log_interval = 5
         self.save_interval = 5
         self.val_interval = 5
         self.val_batch_size = 16
