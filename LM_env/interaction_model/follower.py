@@ -2,10 +2,10 @@ import numpy as np
 
 class IDMFollowingModel:
     def __init__(self, 
-                 desired_velocity=10.0,  # 期望速度 (m/s)
+                 desired_velocity=5.0,  # 期望速度 (m/s)
                  max_acceleration=3.0,   # 最大加速度 (m/s²)
                  comfortable_deceleration=4.0,  # 舒适减速度 (m/s²)
-                 minimum_spacing=1.0,    # 最小安全间距 (m)
+                 minimum_spacing=0.5,    # 最小安全间距 (m)
                  time_headway=1):      # 时间间隔 (s)
         """
         初始化IDM跟车模型参数

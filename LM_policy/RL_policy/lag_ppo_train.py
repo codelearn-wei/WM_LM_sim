@@ -1,9 +1,10 @@
 import gymnasium as gym
 from LM_env.envs.merge_env import MergeEnv
-from stable_baselines3 import PPO
+from stable_baselines3.common.env_checker import check_env
+import numpy as np
+from stable_baselines3.Lag_ppo.lag_ppo import LagrangianPPO
 from config.ppo_config import ppo_config
 # 定义make_env创建强化学习环境
-
 
 def make_env(map_path="LM_env/LM_map/LM_static_map.pkl", render_mode=None, max_episode_steps=500):
     """Factory function to create the environment with specified parameters"""
@@ -13,7 +14,6 @@ def make_env(map_path="LM_env/LM_map/LM_static_map.pkl", render_mode=None, max_e
         max_episode_steps=max_episode_steps
     )
     return env
-
 
 def initialize_ppo(config=None):
     """
@@ -32,7 +32,7 @@ def initialize_ppo(config=None):
     
  
     # 初始化PPO模型
-    model = PPO(
+    model = LagrangianPPO(
         policy=config["policy"],
         env=env,
         learning_rate=config["learning_rate"],

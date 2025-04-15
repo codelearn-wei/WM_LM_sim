@@ -6,9 +6,11 @@ import numpy as np
 import pygame
 import pickle
 from scipy.interpolate import splprep, splev
-from LM_env.interaction_model.vehicle_model import VehicleKinematicsModel , Vehicle
-from LM_env.interaction_model.Initializer import SimulationInitializer
+from LM_env.utils.vehicle_model import VehicleKinematicsModel , Vehicle
+from LM_env.interaction_model.initial import SingleEgoMergeInitializer
 from LM_env.interaction_model.strategy import StrategyManager
+from LM_env.utils.Frenet_Trans import *
+from LM_env.utils.CollisionDetect import ColliTest
 
 # TODO:仿真器搭建还有以下工作（已完成主体函数框架）：
 # 1、StrategyManager类，现在是简单的IDM策略，需要建模汇入场景的环境，实现基于交互的策略。（重点，难点。考虑数据分布，决策价值观，世界模型的建立和群体收益等）
@@ -78,6 +80,10 @@ class MergeEnv(gym.Env):
         )))
         self._fit_reference_spline()
         
+        # 主道参考线
+        self.reference_xy = self.reference_line[::20]  # 每20个点取一个，减少点数
+        self.xy2Frenet = Frenet_trans(self.reference_xy)
+        
         # 车辆状态更新和管理
         self.vehicles = {}
         self.next_vehicle_id = 0
@@ -86,16 +92,16 @@ class MergeEnv(gym.Env):
         
         # TODO：为建立更真实的仿真环境，需要设计车辆的初始化分布和交互模型
         # 环境车辆初始化
-        self.initializer = SimulationInitializer(self.static_map_data)
+        self.initializer = SingleEgoMergeInitializer(self.static_map_data)
         
         # 车辆参数初始化,需要更复杂的符合驾驶人行为建模的参数
         
         self.ego_config = {
-             'position_index': 1000,
-                'velocity': 10.0,
+             'position_index': -100,
+                'velocity': 0,
                 'length': 5.0,
                 'width': 2.0,
-                'lane': 1,
+                'lane': 2,
                 'attributes': {'is_ego': True}  
         }
 
@@ -160,27 +166,35 @@ class MergeEnv(gym.Env):
         if ego_init_state:
             ego_id = self.next_vehicle_id
             self.vehicles[ego_id] = Vehicle(
-                    position = ego_init_state.position,
-                    velocity = ego_init_state.velocity,
+                    x = ego_init_state.x,
+                    y = ego_init_state.y,
+                    v = ego_init_state.v,
+                    a = ego_init_state.a,
+                    yaw = ego_init_state.yaw,
                     heading = ego_init_state.heading,
-                    length = ego_init_state.length,
+                    yaw_rate= ego_init_state.yaw_rate,
                     width = ego_init_state.width,
+                    length = ego_init_state.length,
                     attributes = ego_init_state.attributes    
             )
             self.ego_vehicle_id = ego_id
             self.next_vehicle_id += 1
         
-        # Add environment vehicles
+        # 添加环境车辆
         if env_vehicles_init_states:
             for env_vehicle_state in env_vehicles_init_states:
                 env_id = self.next_vehicle_id
                 self.vehicles[env_id] = Vehicle(
-                        position = env_vehicle_state.position,
-                        velocity = env_vehicle_state.velocity,
-                        heading = env_vehicle_state.heading,
-                        length = env_vehicle_state.length,
-                        width = env_vehicle_state.width,
-                        attributes = env_vehicle_state.attributes           
+                    x = env_vehicle_state.x,
+                    y = env_vehicle_state.y,
+                    v = env_vehicle_state.v,
+                    a = env_vehicle_state.a,
+                    yaw = env_vehicle_state.yaw,
+                    heading = env_vehicle_state.heading,
+                    width = env_vehicle_state.width,
+                    yaw_rate= env_vehicle_state.yaw_rate,
+                    length = env_vehicle_state.length,
+                    attributes = env_vehicle_state.attributes          
                 )
                 self.next_vehicle_id += 1
         
@@ -197,7 +211,7 @@ class MergeEnv(gym.Env):
     def delete_env_vehicle(self):
         to_delete = []
         for vid, vehicle in self.vehicles.items():
-            if vid != self.ego_vehicle_id and vehicle.position[0] < 1030:
+            if vid != self.ego_vehicle_id and vehicle.x < 1030:
                 to_delete.append(vid)
         for vid in to_delete:
             del self.vehicles[vid]
@@ -228,6 +242,8 @@ class MergeEnv(gym.Env):
             ego_vehicle = self.vehicles[self.ego_vehicle_id]
             acceleration = float(ego_action[0])
             steering_angle = float(ego_action[1])
+            # 转化到s-l坐标系
+            ego_s , ego_l = self.xy2Frenet.trans_sl(ego_vehicle.x, ego_vehicle.y, ego_vehicle.v, ego_vehicle.a, ego_vehicle.yaw)
             self.vehicle_model.update(ego_vehicle, acceleration, steering_angle, self.dt)
             
             # 获得主车观测
@@ -242,14 +258,15 @@ class MergeEnv(gym.Env):
             # 额外信息汇总
             info = {
                 'current_step': self.current_step,
-                'ego_position': ego_vehicle.position.tolist(),
-                'ego_velocity': ego_vehicle.velocity.tolist(),
+                'ego_x': ego_vehicle.x,
+                'ego_y': ego_vehicle.y,
+                'ego_velocity': ego_vehicle.v,
                 'ego_heading': ego_vehicle.heading
             }
             
             # 监测环境状态
             env_status = self._check_environment_status()
-            # print(f" Environment Status: {env_status}")
+            print(f" Environment Status: {env_status}")
         
         if self.render_mode == "human":
             self._render_frame()
@@ -281,13 +298,13 @@ class MergeEnv(gym.Env):
 
         # 遍历所有车辆
         for vid, vehicle in self.vehicles.items():
-            # 基本信息
+            # 本车基本信息
             vehicle_info = {
-                'position': vehicle.position.tolist(),
-                'velocity': vehicle.velocity.tolist(),
-                'acceleration': vehicle.acceleration.tolist(),
-                'heading': vehicle.heading , # 航向角
-                 'is_ego': vehicle.attributes.get('isego', False)
+            'position': [vehicle.x, vehicle.y],
+            'velocity': vehicle.v,  # 标量速度
+            'acceleration': vehicle.a,
+            'heading': vehicle.heading,
+            'is_ego': vehicle.attributes['attributes'].get('is_ego', False)
             }
 
             # 计算周围车辆的相对信息
@@ -295,17 +312,17 @@ class MergeEnv(gym.Env):
             for other_vid, other_vehicle in self.vehicles.items():
                 if vid == other_vid:  # 跳过自身
                     continue
-                # 计算两车距离
-                distance = np.linalg.norm(vehicle.position - other_vehicle.position)
+                 # 计算两车中心点距离
+                position = np.array([vehicle.x, vehicle.y])
+                other_position = np.array([other_vehicle.x, other_vehicle.y])
+                distance = np.linalg.norm(position - other_position)
                 if distance < distance_threshold:
-                    # 绝对位置
-                    position = other_vehicle.position.tolist()
                     # 相对位置
-                    relative_position = (other_vehicle.position - vehicle.position).tolist()
-                    # 绝对速度
-                    velocity = other_vehicle.velocity.tolist()                 
-                    # 相对速度
-                    relative_velocity = (other_vehicle.velocity - vehicle.velocity).tolist()                  
+                    relative_position = (other_position - position).tolist()
+                    # 绝对速度（标量）
+                    velocity = other_vehicle.v
+                    # 相对速度（标量差值，近似处理）
+                    relative_velocity = other_vehicle.v - vehicle.v
                     # 绝对航向角
                     heading = other_vehicle.heading
                     # 相对航向角
@@ -316,8 +333,6 @@ class MergeEnv(gym.Env):
                     length = other_vehicle.length
                     # 车宽
                     width = other_vehicle.width
-                    # 是否是主车
-                    is_ego = other_vehicle.attributes.get('isego', False)
 
                     neighbors.append({
                         'vehicle_id': other_vid,
@@ -329,7 +344,7 @@ class MergeEnv(gym.Env):
                         'relative_heading': relative_heading,
                         'length': length,
                         'withd': width,
-                        'is_ego': is_ego
+                        'is_ego': vehicle.attributes['attributes'].get('is_ego', False)
                     })
 
             # 添加邻居信息
@@ -353,9 +368,10 @@ class MergeEnv(gym.Env):
         # Check if ego vehicle exists
         if hasattr(self, 'ego_vehicle_id') and self.ego_vehicle_id in self.vehicles:
             ego_vehicle = self.vehicles[self.ego_vehicle_id]
-            ego_x, ego_y = ego_vehicle.position
+            ego_x = ego_vehicle.x
+            ego_y = ego_vehicle.y
             ego_heading = ego_vehicle.heading
-            ego_speed = np.linalg.norm(ego_vehicle.velocity)
+            ego_speed = np.linalg.norm(ego_vehicle.v)
             
             # Basic ego vehicle features
             obs = [ego_x, ego_y, ego_heading, ego_speed]
@@ -365,15 +381,15 @@ class MergeEnv(gym.Env):
             for vid, vehicle in self.vehicles.items():
                 if vid != self.ego_vehicle_id:
                     # Calculate relative position and velocity
-                    rel_pos_x = vehicle.position[0] - ego_vehicle.position[0]
-                    rel_pos_y = vehicle.position[1] - ego_vehicle.position[1]
-                    rel_vel_x = vehicle.velocity[0] - ego_vehicle.velocity[0]
-                    rel_vel_y = vehicle.velocity[1] - ego_vehicle.velocity[1]
+                    rel_pos_x = vehicle.x - ego_vehicle.x
+                    rel_pos_y = vehicle.y - ego_vehicle.y
+                    rel_vel = vehicle.v - ego_vehicle.v
+
                     
                     # Calculate distance
                     distance = np.sqrt(rel_pos_x**2 + rel_pos_y**2)
                     
-                    surrounding_vehicles.append((distance, rel_pos_x, rel_pos_y, rel_vel_x, rel_vel_y))
+                    surrounding_vehicles.append((distance, rel_pos_x, rel_pos_y, rel_vel))
             
             # Sort by distance and take closest vehicles
             surrounding_vehicles.sort()
@@ -382,9 +398,9 @@ class MergeEnv(gym.Env):
             # Add surrounding vehicles to observation
             for i in range(max_vehicles_observed):
                 if i < len(surrounding_vehicles):
-                    # Add relative x, y position and vx, vy velocity
+                    # Add relative x, y position and v
                     obs.extend([surrounding_vehicles[i][1], surrounding_vehicles[i][2],
-                            surrounding_vehicles[i][3], surrounding_vehicles[i][4]])
+                            surrounding_vehicles[i][3]])
                 else:
                     # Pad with zeros if we have fewer vehicles than the maximum
                     obs.extend([0.0, 0.0, 0.0, 0.0])
@@ -418,7 +434,7 @@ class MergeEnv(gym.Env):
         if self.ego_vehicle_id is not None:
             ego_vehicle = self.vehicles[self.ego_vehicle_id]
             # 设计目标终点（应该是一个x，y的范围）
-            if 1032 < ego_vehicle.position[0] < 1035 & 0 < ego_vehicle.position[1] < 2:
+            if 1032 < ego_vehicle.x < 1035 & 0 < ego_vehicle.y < 2:
                 return True
         return False
     
@@ -449,7 +465,7 @@ class MergeEnv(gym.Env):
         for vid1, vehicle1 in self.vehicles.items():
             for vid2, vehicle2 in self.vehicles.items():
                 if vid1 != vid2 and vid1 < vid2:  # 避免重复检查相同的车辆对
-                    distance = np.linalg.norm(vehicle1.position - vehicle2.position)
+                    distance = np.linalg.norm(vehicle1.x - vehicle2.x)
                     # 使用车辆长度和宽度的平均值作为碰撞阈值
                     collision_threshold = (vehicle1.length + vehicle2.length + vehicle1.width + vehicle2.width) / 4.0
                     
@@ -459,6 +475,7 @@ class MergeEnv(gym.Env):
         
         return collision_occurred, colliding_pairs
 
+    # TODO：检查主车是否与环境车辆发生碰撞(分离轴定理或者双圆)
     def _check_ego_collision(self):
         """
         检查主车是否与环境车辆发生碰撞，并返回与主车发生碰撞的环境车辆ID
@@ -476,11 +493,8 @@ class MergeEnv(gym.Env):
         
         for vid, vehicle in self.vehicles.items():
             if vid != self.ego_vehicle_id:
-                distance = np.linalg.norm(ego_vehicle.position - vehicle.position)
-                # 使用车辆长度和宽度的平均值作为碰撞阈值
-                collision_threshold = (ego_vehicle.length + vehicle.length + ego_vehicle.width + vehicle.width) / 4.0
-                
-                if distance < collision_threshold:
+                iscollsion = ColliTest(ego_vehicle, vehicle, ego_vehicle.length, ego_vehicle.width)# 检测碰撞          
+                if iscollsion:
                     ego_collision = True
                     colliding_with_ego.append(vid)
         
@@ -501,7 +515,7 @@ class MergeEnv(gym.Env):
             if hasattr(self, 'ego_vehicle_id') and vid == self.ego_vehicle_id:
                 continue
                 
-            position = vehicle.position
+            position = [vehicle.x, vehicle.y]
             distance_to_ref = self._get_distance_to_reference_line(position)
             
             # 超出参考线一定距离视为超出道路边界
@@ -523,11 +537,11 @@ class MergeEnv(gym.Env):
             return False
             
         ego_vehicle = self.vehicles[self.ego_vehicle_id]
-        position = ego_vehicle.position
+        position = [ego_vehicle.x, ego_vehicle.y]
         distance_to_ref = self._get_distance_to_reference_line(position)
         
         # 超出参考线一定距离视为超出道路边界
-        road_width_threshold = 3.0
+        road_width_threshold = 200
         return distance_to_ref > road_width_threshold
 
     # 添加一个综合检测函数，在仿真中监测环境状态
@@ -621,18 +635,18 @@ class MergeEnv(gym.Env):
         lower_points = self.map_dict['main_lower_boundary'][::-1]
         road_points = np.vstack((upper_points, lower_points))
         
-        self.road_pixel_points = [self.map_to_pixel(x, y) for x, y in road_points]
-        self.upper_pixel_points = [self.map_to_pixel(x, y) for x, y in self.map_dict['upper_boundary']]
-        self.lower_pixel_points = [self.map_to_pixel(x, y) for x, y in self.map_dict['main_lower_boundary']]
-        self.reference_pixel_points = [self.map_to_pixel(x, y) for x, y in self.smooth_reference_line]
-        self.aux_reference_pixel_points = [self.map_to_pixel(x, y) for x, y in self.aux_reference_line]
+        self.road_pixel_points = [self._map_to_pixel(x, y) for x, y in road_points]
+        self.upper_pixel_points = [self._map_to_pixel(x, y) for x, y in self.map_dict['upper_boundary']]
+        self.lower_pixel_points = [self._map_to_pixel(x, y) for x, y in self.map_dict['main_lower_boundary']]
+        self.reference_pixel_points = [self._map_to_pixel(x, y) for x, y in self.smooth_reference_line]
+        self.aux_reference_pixel_points = [self._map_to_pixel(x, y) for x, y in self.aux_reference_line]
         
         if 'auxiliary_dotted_line' in self.map_dict:
-            self.auxiliary_dotted_line_pixel_points = [self.map_to_pixel(x, y) for x, y in self.map_dict['auxiliary_dotted_line']]
+            self.auxiliary_dotted_line_pixel_points = [self._map_to_pixel(x, y) for x, y in self.map_dict['auxiliary_dotted_line']]
         else:
             self.auxiliary_dotted_line_pixel_points = []
     
-    def map_to_pixel(self, x, y):
+    def _map_to_pixel(self, x, y):
         """Convert map coordinates to pixel coordinates"""
         pixel_x = (x - self.min_x) * self.scale_x
         pixel_y = WINDOW_HEIGHT - (y - self.min_y) * self.scale_y
@@ -669,7 +683,8 @@ class MergeEnv(gym.Env):
         # Draw vehicles
         for vid, vehicle in self.vehicles.items():
             # Get vehicle center position and heading
-            center_x, center_y = vehicle.position
+            center_x = vehicle.x
+            center_y = vehicle.y
             heading = vehicle.heading
             length = vehicle.length
             width = vehicle.width
@@ -698,7 +713,7 @@ class MergeEnv(gym.Env):
                 global_points.append([global_x, global_y])
             
             # Convert to pixel coordinates
-            pixel_points = [self.map_to_pixel(x, y) for x, y in global_points]
+            pixel_points = [self._map_to_pixel(x, y) for x, y in global_points]
             
             # Draw vehicle with different colors for ego and environment vehicles
             if vid == self.ego_vehicle_id:
@@ -710,8 +725,8 @@ class MergeEnv(gym.Env):
                 direction_end = [front_center[0] + np.cos(heading) * (length / 2), 
                                 front_center[1] + np.sin(heading) * (length / 2)]
                 pygame.draw.line(self.screen, (255, 255, 0), 
-                                self.map_to_pixel(front_center[0], front_center[1]),
-                                self.map_to_pixel(direction_end[0], direction_end[1]), 2)
+                                self._map_to_pixel(front_center[0], front_center[1]),
+                                self._map_to_pixel(direction_end[0], direction_end[1]), 2)
             else:
                 color = (0, 255, 0)  # green for environment vehicles
             
@@ -726,7 +741,7 @@ class MergeEnv(gym.Env):
         # If ego vehicle exists, display its information
         if self.ego_vehicle_id in self.vehicles:
             ego_vehicle = self.vehicles[self.ego_vehicle_id]
-            ego_speed = np.linalg.norm(ego_vehicle.velocity)
+            ego_speed = np.linalg.norm(ego_vehicle.v)
             ego_heading_deg = np.degrees(ego_vehicle.heading) % 360
             ego_info = f"Ego Speed: {ego_speed:.2f} m/s | Heading: {ego_heading_deg:.1f}°"
             ego_surface = self.font.render(ego_info, True, (0, 255, 255))

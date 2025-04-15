@@ -4,10 +4,12 @@ import pygame
 import numpy as np
 import pickle
 from scipy.interpolate import splprep, splev
-from LM_env.interaction_model.vehicle_model import VehicleKinematicsModel , Vehicle
-from LM_env.interaction_model.Initializer import SimulationInitializer
+from LM_env.utils.vehicle_model import VehicleKinematicsModel , Vehicle
+from LM_env.interaction_model.initial import SingleEgoMergeInitializer
 from LM_env.interaction_model.strategy import StrategyManager
+from LM_env.utils.Frenet_Trans import *
 import time
+
 
 # TODO:仿真器搭建还有以下工作（已完成主体函数框架）：
 # 1、StrategyManager类，现在是简单的策略，需要建模汇入场景的环境，实现基于交互的策略。（重点，难点。考虑数据分布，决策价值观，世界模型的建立和群体收益等）
@@ -30,16 +32,26 @@ class Simulator:
     def __init__(self, static_map_data, strategy, dt=0.1 , window_width=WINDOW_WIDTH, window_height=WINDOW_HEIGHT ,real_time_mode=False):
         # 初始化地图数据
         self.map_dict = static_map_data['map_dict']
+        # 主要参考线
         self.reference_line = np.array(list(zip(
             static_map_data['main_road_avg_trajectory']['x_coords'],
             static_map_data['main_road_avg_trajectory']['y_coords']
         )))
         self._fit_reference_spline()
-
+        self.aux_reference_line = np.array(list(zip(
+            static_map_data['aux_reference_lanes']['x_coords'],
+            static_map_data['aux_reference_lanes']['y_coords']
+        )))
+        
+        # 主道参考线
+        self.reference_xy = self.reference_line[::20]  # 每20个点取一个，减少点数
+        xy2Frenet = Frenet_trans(self.reference_xy)
+               
         # 初始化 Pygame
         pygame.init()
         self.screen = pygame.display.set_mode((window_width, window_height))
         pygame.display.set_caption("Traffic Simulator - Ramp Merge")
+
 
         # 计算坐标范围和缩放比例
         all_points = np.vstack((self.map_dict['upper_boundary'], self.map_dict['main_lower_boundary'], self.reference_line))
@@ -59,7 +71,6 @@ class Simulator:
         self.scale_y = self.scale
         self._prepare_pixel_points()
         
-
         # 仿真状态
         self.paused = False
         self.current_simulation_frame = 0
@@ -82,14 +93,13 @@ class Simulator:
         self.current_frame = 0      # 当前帧
         self.vehicle_model = VehicleKinematicsModel() # 车辆运动学模型
         
-        
-        
+         
         # 初始化 Pygame
         pygame.init()
         self.screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
         pygame.display.set_caption("Merge Traffic Simulator")
     
-    # 相当于reset函数，添加第一帧的车辆
+    
     def reset(self, ego_init_state, env_vehicles_init_states=None):
         
         # 清空现有车辆
@@ -102,13 +112,17 @@ class Simulator:
         if ego_init_state:
             ego_id = self.next_vehicle_id
             self.vehicles[ego_id] = Vehicle(
-                ego_init_state.position,
-                ego_init_state.velocity,
-                ego_init_state.heading,
-                ego_init_state.length,
-                ego_init_state.width,
+                    x = ego_init_state.x,
+                    y = ego_init_state.y,
+                    v = ego_init_state.v,
+                    a = ego_init_state.a,
+                    yaw = ego_init_state.yaw,
+                    heading = ego_init_state.heading,
+                    yaw_rate= ego_init_state.yaw_rate,
+                    width = ego_init_state.width,
+                    length = ego_init_state.length,
+                    attributes = ego_init_state.attributes    
             )
-            # 标记主车ID
             self.ego_vehicle_id = ego_id
             self.next_vehicle_id += 1
         
@@ -117,11 +131,16 @@ class Simulator:
             for env_vehicle_state in env_vehicles_init_states:
                 env_id = self.next_vehicle_id
                 self.vehicles[env_id] = Vehicle(
-                        env_vehicle_state.position,
-                        env_vehicle_state.velocity,
-                        env_vehicle_state.heading,
-                        env_vehicle_state.length,
-                        env_vehicle_state.width,
+                    x = env_vehicle_state.x,
+                    y = env_vehicle_state.y,
+                    v = env_vehicle_state.v,
+                    a = env_vehicle_state.a,
+                    yaw = env_vehicle_state.yaw,
+                    heading = env_vehicle_state.heading,
+                    width = env_vehicle_state.width,
+                    yaw_rate= env_vehicle_state.yaw_rate,
+                    length = env_vehicle_state.length,
+                    attributes = env_vehicle_state.attributes          
                 )
                 self.next_vehicle_id += 1
         
@@ -130,7 +149,7 @@ class Simulator:
         to_delete = []  # 用于存储需要删除的车辆键
         # 遍历字典，找出满足条件的车辆
         for vid, vehicle in self.vehicles.items():
-            if vehicle.position[0] < 1030:  # 判断条件
+            if vehicle.x < 1030:  # 判断条件
                 to_delete.append(vid)  # 将满足条件的车辆键添加到列表
         # 根据收集的键逐个删除
         for vid in to_delete:
@@ -167,13 +186,13 @@ class Simulator:
 
         # 遍历所有车辆
         for vid, vehicle in self.vehicles.items():
-            # 基本信息
+            # 本车基本信息
             vehicle_info = {
-                'position': vehicle.position.tolist(),
-                'velocity': vehicle.velocity.tolist(),
-                'acceleration': vehicle.acceleration.tolist(),
-                'heading': vehicle.heading,  # 航向角
-                'is_ego': vehicle.attributes.get('isego', False)
+            'position': [vehicle.x, vehicle.y],
+            'velocity': vehicle.v,  # 标量速度
+            'acceleration': vehicle.a,
+            'heading': vehicle.heading,
+            'is_ego': vehicle.attributes['attributes'].get('is_ego', False)
             }
 
             # 计算周围车辆的相对信息
@@ -181,17 +200,16 @@ class Simulator:
             for other_vid, other_vehicle in self.vehicles.items():
                 if vid == other_vid:  # 跳过自身
                     continue
-                # 计算两车距离
-                distance = np.linalg.norm(vehicle.position - other_vehicle.position)
+                position = np.array([vehicle.x, vehicle.y])
+                other_position = np.array([other_vehicle.x, other_vehicle.y])
+                distance = np.linalg.norm(position - other_position)
                 if distance < distance_threshold:
-                    # 绝对位置
-                    position = other_vehicle.position.tolist()
                     # 相对位置
-                    relative_position = (other_vehicle.position - vehicle.position).tolist()
-                    # 绝对速度
-                    velocity = other_vehicle.velocity.tolist()                 
-                    # 相对速度
-                    relative_velocity = (other_vehicle.velocity - vehicle.velocity).tolist()                  
+                    relative_position = (other_position - position).tolist()
+                    # 绝对速度（标量）
+                    velocity = other_vehicle.v
+                    # 相对速度（标量差值，近似处理）
+                    relative_velocity = other_vehicle.v - vehicle.v
                     # 绝对航向角
                     heading = other_vehicle.heading
                     # 相对航向角
@@ -213,7 +231,7 @@ class Simulator:
                         'relative_heading': relative_heading,
                         'length': length,
                         'withd': width,
-                        'is_ego': vehicle.attributes.get('isego', False)
+                        'is_ego': vehicle.attributes['attributes'].get('is_ego', False)
                     })
 
             # 添加邻居信息
@@ -239,6 +257,7 @@ class Simulator:
         
         # 绘制参考轨迹
         pygame.draw.lines(self.screen, (0, 0, 0), False, self.reference_pixel_points, 1)
+        pygame.draw.lines(self.screen, (0, 0, 0), False, self.aux_reference_pixel_points, 1)
         
         # 绘制虚线
         if self.auxiliary_dotted_line_pixel_points:
@@ -250,7 +269,8 @@ class Simulator:
         # 绘制车辆
         for vid, vehicle in self.vehicles.items():
             # 获取车辆的中心位置和航向角
-            center_x, center_y = vehicle.position
+            center_x = vehicle.x
+            center_y = vehicle.y
             heading = vehicle.heading
             length = vehicle.length
             width = vehicle.width
@@ -322,7 +342,7 @@ class Simulator:
         # 如果存在主车，显示主车信息
         if hasattr(self, 'ego_vehicle_id') and self.ego_vehicle_id in self.vehicles:
             ego_vehicle = self.vehicles[self.ego_vehicle_id]
-            ego_speed = np.linalg.norm(ego_vehicle.velocity)
+            ego_speed = np.linalg.norm(ego_vehicle.v)
             ego_heading_deg = np.degrees(ego_vehicle.heading) % 360
             ego_info = f"Ego Vehicle | Speed: {ego_speed:.2f} m/s | Heading: {ego_heading_deg:.1f}°"
             ego_surface = self.font.render(ego_info, True, (0, 255, 255))
@@ -410,7 +430,7 @@ class Simulator:
         for vid1, vehicle1 in self.vehicles.items():
             for vid2, vehicle2 in self.vehicles.items():
                 if vid1 != vid2 and vid1 < vid2:  # 避免重复检查相同的车辆对
-                    distance = np.linalg.norm(vehicle1.position - vehicle2.position)
+                    distance = np.linalg.norm(vehicle1.x - vehicle2.x)
                     # 使用车辆长度和宽度的平均值作为碰撞阈值
                     collision_threshold = (vehicle1.length + vehicle2.length + vehicle1.width + vehicle2.width) / 4.0
                     
@@ -437,7 +457,7 @@ class Simulator:
         
         for vid, vehicle in self.vehicles.items():
             if vid != self.ego_vehicle_id:
-                distance = np.linalg.norm(ego_vehicle.position - vehicle.position)
+                distance = np.linalg.norm(ego_vehicle.x - vehicle.x)
                 # 使用车辆长度和宽度的平均值作为碰撞阈值
                 collision_threshold = (ego_vehicle.length + vehicle.length + ego_vehicle.width + vehicle.width) / 4.0
                 
@@ -446,6 +466,7 @@ class Simulator:
                     colliding_with_ego.append(vid)
         
         return ego_collision, colliding_with_ego
+    
 
     def _check_env_off_road(self):
         """
@@ -462,7 +483,7 @@ class Simulator:
             if hasattr(self, 'ego_vehicle_id') and vid == self.ego_vehicle_id:
                 continue
                 
-            position = vehicle.position
+            position = [vehicle.x , vehicle.y]
             distance_to_ref = self._get_distance_to_reference_line(position)
             
             # 超出参考线一定距离视为超出道路边界
@@ -484,7 +505,7 @@ class Simulator:
             return False
             
         ego_vehicle = self.vehicles[self.ego_vehicle_id]
-        position = ego_vehicle.position
+        position = [ego_vehicle.x , ego_vehicle.y]
         distance_to_ref = self._get_distance_to_reference_line(position)
         
         # 超出参考线一定距离视为超出道路边界
@@ -548,6 +569,7 @@ class Simulator:
         self.upper_pixel_points = [self.map_to_pixel(x, y) for x, y in self.map_dict['upper_boundary']]
         self.lower_pixel_points = [self.map_to_pixel(x, y) for x, y in self.map_dict['main_lower_boundary']]
         self.reference_pixel_points = [self.map_to_pixel(x, y) for x, y in self.smooth_reference_line]
+        self.aux_reference_pixel_points = [self.map_to_pixel(x, y) for x, y in self.aux_reference_line]
         if 'auxiliary_dotted_line' in self.map_dict:
             self.auxiliary_dotted_line_pixel_points = [self.map_to_pixel(x, y) for x, y in self.map_dict['auxiliary_dotted_line']]
         else:
@@ -581,12 +603,12 @@ def main():
     
     # 3、 创建仿真器初始化函数
     ego_config = {
-    # 'position_index': 2,
-    # 'velocity': 10.0,
-    # 'length': 5.0,
-    # 'width': 2.0,
-    # 'lane': 1,
-    # 'attributes': {'is_ego': True}
+    'position_index': -200,
+    'velocity': 5.0,
+    'length': 4.0,
+    'width': 2.0,
+    'lane': 1,
+    'attributes': {'is_ego': True}
     }
 
     env_vehicles_configs = {
@@ -599,7 +621,7 @@ def main():
     }
     
     #! 初始化的方式需要贴合实际情况
-    initializer = SimulationInitializer(static_map[0])
+    initializer = SingleEgoMergeInitializer(static_map[0])
     # 配置
     
     ego_init_state, env_vehicles_init_states = initializer.get_simulation_init_states(ego_config,env_vehicles_configs)
