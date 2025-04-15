@@ -38,7 +38,7 @@ class SimulationInitializer:
         ))) if 'main_road_avg_trajectory' in static_map else None
         
         # TODO: 点还需要选少一点，现在点太多，预瞄太多，影响速度
-        self.reference_xy = self.reference_line[::1]  # 每20个点取一个，减少点数
+        self.reference_xy = self.reference_line[::20]  # 每20个点取一个，减少点数
         if self.reference_xy is not None:
             self.s_values = self.compute_arc_lengths(self.reference_xy)
         
@@ -47,18 +47,19 @@ class SimulationInitializer:
             static_map['aux_reference_lanes']['x_coords'],
             static_map['aux_reference_lanes']['y_coords']
         ))) if 'aux_reference_lanes' in static_map else None
-        if self.aux_reference_lines is not None:
-            self.aux_s_values = self.compute_arc_lengths(self.aux_reference_lines)
+        self.aux_reference_xy = self.aux_reference_lines[::-5]  # 每5个点取一个，减少点数,反转一下
+        if self.aux_reference_xy is not None:
+            self.aux_s_values = self.compute_arc_lengths(self.aux_reference_xy)
 
-    def compute_arc_lengths(self, reference_line):
+    def compute_arc_lengths(self, reference_xy):
         """计算参考线的累积弧长"""
-        diffs = np.diff(reference_line, axis=0)
+        diffs = np.diff(reference_xy, axis=0)
         distances = np.linalg.norm(diffs, axis=1)
         s_values = np.cumsum(distances)
         s_values = np.insert(s_values, 0, 0)
         return s_values
 
-    def select_spawn_points(self, reference_line, s_values, num_points, min_spacing):
+    def select_spawn_points(self, reference_xy, s_values, num_points, min_spacing):
         """在指定参考线上选择满足间距条件的生成点"""
         if num_points == 0:
             return []
@@ -77,19 +78,19 @@ class SimulationInitializer:
             print(f"警告：无法找到足够的生成点来放置{num_points}辆车，最多可放置{len(selected_points)}辆车")
         return selected_points[:num_points]
 
-    def create_vehicle(self, reference_line, s_values, position_index, velocity, length, width, lane, **attributes):
+    def create_vehicle(self, reference_xy, s_values, position_index, velocity, length, width, lane, **attributes):
         """创建单个车辆对象"""
-        if reference_line is None or position_index >= len(reference_line) - 2:
+        if reference_xy is None or position_index >= len(reference_xy) - 2:
             raise ValueError("参考线数据不可用或索引越界")
 
         # 获取参考点的 x, y 坐标
-        ref_point = reference_line[position_index]
+        ref_point = reference_xy[position_index]
         x, y = ref_point[0], ref_point[1]
 
         # 计算车辆朝向（heading），基于参考线前后点的斜率
         heading = np.arctan2(
-            reference_line[position_index + 1][1] - reference_line[position_index - 1][1],
-            reference_line[position_index + 1][0] - reference_line[position_index - 1][0]
+            reference_xy[position_index + 1][1] - reference_xy[position_index - 1][1],
+            reference_xy[position_index + 1][0] - reference_xy[position_index - 1][0]
         )
 
         # 设置速度、加速度和偏航率
@@ -127,7 +128,7 @@ class SingleEgoMergeInitializer(SimulationInitializer):
             width = ego_config.get('width', 2.0)
             attributes = ego_config.get('attributes', {'isego': True})
             ego_vehicle = self.create_vehicle(
-                self.aux_reference_lines, self.aux_s_values, pos_idx, velocity, length, width, lane, **attributes
+                self.aux_reference_xy, self.aux_s_values, pos_idx, velocity, length, width, lane, **attributes
             )
 
         # 创建环境车辆（在主道上）
@@ -138,7 +139,7 @@ class SingleEgoMergeInitializer(SimulationInitializer):
             length_range = env_vehicles_configs.get('length_range', (4.0, 5.5))
             width_range = env_vehicles_configs.get('width_range', (2, 2.1))
             common_attributes = env_vehicles_configs.get('attributes', {'isego': False})
-            spawn_points = self.select_spawn_points(self.reference_line, self.s_values, num_vehicles, self.min_point_spacing)
+            spawn_points = self.select_spawn_points(self.reference_xy, self.s_values, num_vehicles, self.min_point_spacing)
 
             for pos_idx in spawn_points:
                 lane = np.random.randint(0, self.n_lanes)
@@ -146,7 +147,7 @@ class SingleEgoMergeInitializer(SimulationInitializer):
                 length = np.random.uniform(length_range[0], length_range[1])
                 width = np.random.uniform(width_range[0], width_range[1])
                 vehicle = self.create_vehicle(
-                    self.reference_line, self.s_values, pos_idx, velocity, length, width, lane, **common_attributes
+                    self.reference_xy, self.s_values, pos_idx, velocity, length, width, lane, **common_attributes
                 )
                 env_vehicles.append(vehicle)
 
@@ -158,7 +159,7 @@ class MultiEgoMergeInitializer(SimulationInitializer):
         # 创建多辆主车（在辅道上）
         ego_vehicles = []
         if isinstance(multi_ego_configs, list):
-            spawn_points = self.select_spawn_points(self.aux_reference_lines, self.aux_s_values, len(multi_ego_configs), self.min_point_spacing)
+            spawn_points = self.select_spawn_points(self.aux_reference_xy, self.aux_s_values, len(multi_ego_configs), self.min_point_spacing)
             for i, config in enumerate(multi_ego_configs):
                 pos_idx = spawn_points[i] if i < len(spawn_points) else config.get('position_index', 0)
                 lane = config.get('lane', 0)
@@ -167,7 +168,7 @@ class MultiEgoMergeInitializer(SimulationInitializer):
                 width = config.get('width', 2.0)
                 attributes = config.get('attributes', {'isego': True})
                 vehicle = self.create_vehicle(
-                    self.aux_reference_lines, self.aux_s_values, pos_idx, velocity, length, width, lane, **attributes
+                    self.aux_reference_xy, self.aux_s_values, pos_idx, velocity, length, width, lane, **attributes
                 )
                 ego_vehicles.append(vehicle)
 
@@ -179,7 +180,7 @@ class MultiEgoMergeInitializer(SimulationInitializer):
             length_range = env_vehicles_configs.get('length_range', (4.0, 5.5))
             width_range = env_vehicles_configs.get('width_range', (2, 2.1))
             common_attributes = env_vehicles_configs.get('attributes', {'isego': False})
-            spawn_points = self.select_spawn_points(self.reference_line, self.s_values, num_vehicles, self.min_point_spacing)
+            spawn_points = self.select_spawn_points(self.reference_xy, self.s_values, num_vehicles, self.min_point_spacing)
 
             for pos_idx in spawn_points:
                 lane = np.random.randint(0, self.n_lanes)
@@ -187,7 +188,7 @@ class MultiEgoMergeInitializer(SimulationInitializer):
                 length = np.random.uniform(length_range[0], length_range[1])
                 width = np.random.uniform(width_range[0], width_range[1])
                 vehicle = self.create_vehicle(
-                    self.reference_line, self.s_values, pos_idx, velocity, length, width, lane, **common_attributes
+                    self.reference_xy, self.s_values, pos_idx, velocity, length, width, lane, **common_attributes
                 )
                 env_vehicles.append(vehicle)
 
@@ -208,7 +209,7 @@ class RandomMergeInitializer(SimulationInitializer):
                     width = config.get('width', 2.0)
                     attributes = config.get('attributes', {'isego': True})
                     vehicle = self.create_vehicle(
-                        self.reference_line, self.s_values, pos_idx, velocity, length, width, lane, **attributes
+                        self.reference_xy, self.s_values, pos_idx, velocity, length, width, lane, **attributes
                     )
                     ego_vehicles.append(vehicle)
             if 'aux' in ego_config:
@@ -220,7 +221,7 @@ class RandomMergeInitializer(SimulationInitializer):
                     width = config.get('width', 2.0)
                     attributes = config.get('attributes', {'isego': True})
                     vehicle = self.create_vehicle(
-                        self.aux_reference_lines, self.aux_s_values, pos_idx, velocity, length, width, lane, **attributes
+                        self.aux_reference_xy, self.aux_s_values, pos_idx, velocity, length, width, lane, **attributes
                     )
                     ego_vehicles.append(vehicle)
 
@@ -232,7 +233,7 @@ class RandomMergeInitializer(SimulationInitializer):
             length_range = env_vehicles_configs.get('length_range', (4.0, 5.5))
             width_range = env_vehicles_configs.get('width_range', (2, 2.1))
             common_attributes = env_vehicles_configs.get('attributes', {'isego': False})
-            spawn_points = self.select_spawn_points(self.reference_line, self.s_values, num_vehicles, self.min_point_spacing)
+            spawn_points = self.select_spawn_points(self.reference_xy, self.s_values, num_vehicles, self.min_point_spacing)
 
             for pos_idx in spawn_points:
                 lane = np.random.randint(0, self.n_lanes)
@@ -240,7 +241,7 @@ class RandomMergeInitializer(SimulationInitializer):
                 length = np.random.uniform(length_range[0], length_range[1])
                 width = np.random.uniform(width_range[0], width_range[1])
                 vehicle = self.create_vehicle(
-                    self.reference_line, self.s_values, pos_idx, velocity, length, width, lane, **common_attributes
+                    self.reference_xy, self.s_values, pos_idx, velocity, length, width, lane, **common_attributes
                 )
                 env_vehicles.append(vehicle)
 

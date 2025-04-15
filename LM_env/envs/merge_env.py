@@ -97,8 +97,8 @@ class MergeEnv(gym.Env):
         # 车辆参数初始化,需要更复杂的符合驾驶人行为建模的参数
         
         self.ego_config = {
-             'position_index': -100,
-                'velocity': 0,
+             'position_index': 50,
+                'velocity': 2,
                 'length': 5.0,
                 'width': 2.0,
                 'lane': 2,
