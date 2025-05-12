@@ -42,7 +42,7 @@ class StrategyManager:
         返回:
             actions: 字典，键为车辆ID，值为[加速度, 前轮转角]的动作
         """
-        # 这里保留原始实现，未做改动
+        # TODO:每一次都要调用参考线，会影响性能，需要修改
         reference_line = np.array(simulator_state['reference_line'])
         active_vehicles = simulator_state['active_vehicles']
         actions = {}

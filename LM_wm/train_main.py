@@ -16,10 +16,10 @@ except ImportError:
         predict_main_func = None
 
 # 运行命令示例:
-# 生成数据: python LM_wm/main.py --generate_data 
-# 训练模型: python LM_wm/main.py --train --mode image
-# 预测:    python LM_wm/main.py --predict --sample_idx 5
-# 全流程:  python LM_wm/main.py --all --mode image
+# 生成数据: python LM_wm/train_main.py --generate_data 
+# 训练模型: python LM_wm/train_main.py --train --mode image
+# 预测:    python LM_wm/train_main.py --predict --sample_idx 5
+# 全流程:  python LM_wm/train_main.py --all --mode image
 def parse_args():
     parser = argparse.ArgumentParser(description='BEV轨迹预测模型 - 集成工具')
     

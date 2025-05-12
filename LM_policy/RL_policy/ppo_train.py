@@ -2,6 +2,7 @@ import gymnasium as gym
 from LM_env.envs.merge_env import MergeEnv
 from stable_baselines3 import PPO
 from config.ppo_config import ppo_config
+from stable_baselines3.common.env_checker import check_env
 # 定义make_env创建强化学习环境
 
 
@@ -66,16 +67,12 @@ render_mode = 'human'
 episodes = 100
 max_steps = 200
 env = make_env(render_mode=render_mode)
-
+# check_env(env)
 # 初始化PPO模型参数
 model = initialize_ppo()
 # 训练模型
 model.learn(total_timesteps=10000)
 
 
-# 设定PPO算法参数（基于配置文件设计）
 
 
-
-# # 检测环境是否符合gymnasium的标准
-# # check_env(env)

@@ -1,7 +1,5 @@
 from typing import List
 from pathlib import Path
-import time
-from tqdm import tqdm
 import torch
 import torch.utils.data as torch_data
 from LM_vis import SceneVisualizer

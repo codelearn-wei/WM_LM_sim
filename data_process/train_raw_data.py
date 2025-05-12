@@ -203,37 +203,35 @@ def classify_vehicles_by_frame_1(
     if not frames:
         return frame_data
 
-    # 处理第一帧
-    first_frame = frames[0]
-    first_vehicles = frame_data[first_frame]
-    if not first_vehicles:
-        return frame_data
+    # 记录已处理的车辆ID及其类型
+    processed_vehicles = {}
 
-    # 提取第一帧车辆坐标
-    coords = np.array([[v["x"], v["y"]] for v in first_vehicles])
-    # 批量判断边界条件
-    below_upper = upper_processor.is_below_batch(coords)
-    above_aux = aux_processor.is_above_batch(coords)
-
-    # 记录第一帧中变道车辆的 vehicle_id
-    changing_lane_ids = set()
-    for i, vehicle in enumerate(first_vehicles):
-        if below_upper[i] and above_aux[i]:
-            vehicle["lane_type"] = "变道车辆"
-            changing_lane_ids.add(vehicle["track_id"])
-        else:
-            vehicle["lane_type"] = "主道车辆"
-
-    # 处理后续帧
-    for frame in frames[1:]:
+    # 处理所有帧
+    for frame in frames:
         vehicles = frame_data[frame]
         if not vehicles:
             continue
+
+        # 获取当前帧中未处理过的车辆
+        new_vehicles = [v for v in vehicles if v["track_id"] not in processed_vehicles]
+        if new_vehicles:
+            coords = np.array([[v["x"], v["y"]] for v in new_vehicles])
+            below_upper = upper_processor.is_below_batch(coords)
+            above_aux = aux_processor.is_above_batch(coords)
+
+            # 处理新出现的车辆
+            for i, vehicle in enumerate(new_vehicles):
+                if below_upper[i] and above_aux[i]:
+                    vehicle["lane_type"] = "变道车辆"
+                    processed_vehicles[vehicle["track_id"]] = "变道车辆"
+                else:
+                    vehicle["lane_type"] = "主道车辆"
+                    processed_vehicles[vehicle["track_id"]] = "主道车辆"
+
+        # 为已处理过的车辆分配之前确定的车道类型
         for vehicle in vehicles:
-            if vehicle["track_id"] in changing_lane_ids:
-                vehicle["lane_type"] = "变道车辆"
-            else:
-                vehicle["lane_type"] = "主道车辆"
+            if vehicle["track_id"] in processed_vehicles:
+                vehicle["lane_type"] = processed_vehicles[vehicle["track_id"]]
 
     return frame_data
 

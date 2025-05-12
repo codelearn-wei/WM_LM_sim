@@ -17,20 +17,7 @@ import pickle
 
 
 def _get_vehicle_tra(json_path: str, excel_path: str):
-        """
-        工具函数：处理Excel和JSON文件中的车辆数据，并返回分类后的结果。
-        
-        Args:
-            json_path (str): JSON 文件路径（地图数据）
-            excel_path (str): Excel 文件路径（车辆轨迹数据）
-        
-        Returns:
-            dict: 按帧分类后的车辆数据
-        
-        Raises:
-            FileNotFoundError: 如果输入的文件路径不存在
-            ValueError: 如果文件内容无法正确解析
-        """
+
         # 检查文件是否存在
         if not Path(json_path).exists():
             raise FileNotFoundError(f"JSON 文件未找到: {json_path}")

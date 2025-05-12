@@ -4,7 +4,7 @@ import pygame
 import numpy as np
 import pickle
 from scipy.interpolate import splprep, splev
-from LM_env.utils.vehicle_model import VehicleKinematicsModel , Vehicle
+from LM_env.utils.Vehicle_model import VehicleKinematicsModel , Vehicle
 from LM_env.interaction_model.initial import SingleEgoMergeInitializer
 from LM_env.interaction_model.strategy import StrategyManager
 from LM_env.utils.Frenet_Trans import *
@@ -603,7 +603,7 @@ def main():
     
     # 3、 创建仿真器初始化函数
     ego_config = {
-    'position_index': -200,
+    'position_index': 10,
     'velocity': 5.0,
     'length': 4.0,
     'width': 2.0,

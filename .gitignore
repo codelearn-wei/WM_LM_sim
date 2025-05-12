@@ -20,6 +20,10 @@ LM_wm/checkpoints
 LM_wm/logs
 LM_wm/test/results
 LM_wm/predictions
+trajectory_outputs
+data_process/behaviour/results
+data_process/behaviour/data
+data_process/behaviour/IRL_value/IRL_tra/tra_data
 
 # 忽略所有 __pycache__ 目录
 __pycache__/

@@ -1,5 +1,5 @@
 import numpy as np
-from LM_env.utils.vehicle_model import Vehicle
+from LM_env.utils.Vehicle_model import Vehicle
 
 
 # 现在可用于初始化的对象：
@@ -13,6 +13,12 @@ from LM_env.utils.vehicle_model import Vehicle
 # 1、主道参考线（生成环境车辆和主车）
 # 2、辅道参考线（生成多辆主车）
 
+# TODO：初始化一定要数据样本多样
+# TODO：初始化的车辆数量要可调
+# TODO：初始化车的行为要符合实际的数据
+# TODO：初始化主道车辆要能一直生成，一直添加
+# TODO：初始化主车的行为要为强化学习服务
+# TODO：要定义好什么车大概率不让，大概率让（和当前情况和驾驶风格，决策价值观都有关系）
 
 class SimulationInitializer:
     """仿真初始化基类，提供通用功能"""
@@ -37,7 +43,7 @@ class SimulationInitializer:
             static_map['main_road_avg_trajectory']['y_coords']
         ))) if 'main_road_avg_trajectory' in static_map else None
         
-        # TODO: 点还需要选少一点，现在点太多，预瞄太多，影响速度
+
         self.reference_xy = self.reference_line[::20]  # 每20个点取一个，减少点数
         if self.reference_xy is not None:
             self.s_values = self.compute_arc_lengths(self.reference_xy)

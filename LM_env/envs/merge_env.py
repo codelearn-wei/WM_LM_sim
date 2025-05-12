@@ -1,16 +1,20 @@
-
 #! 搭建merge的强化学习训练环境
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
-import pygame
 import pickle
 from scipy.interpolate import splprep, splev
-from LM_env.utils.vehicle_model import VehicleKinematicsModel , Vehicle
+
+# 主车道策略交互函数
 from LM_env.interaction_model.initial import SingleEgoMergeInitializer
 from LM_env.interaction_model.strategy import StrategyManager
+
+# 工具函数
+from LM_env.utils.Vehicle_model import VehicleKinematicsModel , Vehicle
 from LM_env.utils.Frenet_Trans import *
-from LM_env.utils.CollisionDetect import ColliTest
+from LM_env.utils.Render import Renderer
+from LM_env.utils.Monitor import Monitor
+
 
 # TODO:仿真器搭建还有以下工作（已完成主体函数框架）：
 # 1、StrategyManager类，现在是简单的IDM策略，需要建模汇入场景的环境，实现基于交互的策略。（重点，难点。考虑数据分布，决策价值观，世界模型的建立和群体收益等）
@@ -22,13 +26,14 @@ from LM_env.utils.CollisionDetect import ColliTest
 # 4、考虑变道主车的的行为学习，基于规则或基于强化学习方法实现，探索多车联合决策的可能性。
 
 
-# Global constants
-WINDOW_WIDTH = 1300
-WINDOW_HEIGHT = 200
-ROAD_COLOR = (180, 180, 180)      # Road color: light gray
-BOUNDARY_COLOR = (255, 255, 255)  # Boundary color: white
-BACKGROUND_COLOR = (30, 30, 30)   # Background color: dark gray
-
+def load_map_data(map_path):
+    """Load and process map data from a pickle file."""
+    try:
+        with open(map_path, 'rb') as file:
+            static_map_data = pickle.load(file)[0]
+        return static_map_data
+    except Exception as e:
+        raise FileNotFoundError(f"Failed to load map data: {e}")
 
 class MergeEnv(gym.Env):
     """
@@ -40,102 +45,111 @@ class MergeEnv(gym.Env):
     }
     
     def __init__(self, map_path="LM_map/LM_static_map.pkl", render_mode=None, dt=0.1, 
-                 max_episode_steps=500, other_vehicle_strategy='interactive'):
+             max_episode_steps=500, other_vehicle_strategy='interactive'):
         """
-        Initialize the merge environment
-        
-        Args:
-            map_path: Path to the static map data file
-            render_mode: 'human' for pygame visualization, 'rgb_array' for numpy array, None for no rendering
-            dt: Time step for simulation
-            max_episode_steps: Maximum number of steps per episode
-            other_vehicle_strategy: Strategy for controlling other vehicles
+        初始化Merge环境
+
+        参数说明:
+            map_path: 静态地图数据的路径
+            render_mode: 渲染模式，可选 'human'（pygame窗口）、'rgb_array'（返回图像数组）或 None（不渲染）
+            dt: 仿真时间步长
+            max_episode_steps: 每个episode的最大步数
+            other_vehicle_strategy: 环境中非ego车辆的控制策略
         """
         super().__init__()
-        
-        # Load map data
-        try:
-            with open(map_path, 'rb') as file:
-                self.static_map_data = pickle.load(file)[0]  # Assuming first item contains map data
-        except Exception as e:
-            raise FileNotFoundError(f"Failed to load map data: {e}")
-        
-        # Set environment parameters
+
+        # ======================== 加载静态地图数据 ========================
+        self.static_map_data = load_map_data(map_path)
+
+        # ======================== 设置环境基本参数 ========================
         self.dt = dt
         self.max_episode_steps = max_episode_steps
         self.render_mode = render_mode
-        self.screen = None
-        self.clock = None
         self.current_step = 0
-        
-        # Initialize map data
+
+        # ======================== 参考线及地图处理 ========================
         self.map_dict = self.static_map_data['map_dict']
+
+        # 主车道平均轨迹参考线（主参考线）
         self.reference_line = np.array(list(zip(
             self.static_map_data['main_road_avg_trajectory']['x_coords'],
             self.static_map_data['main_road_avg_trajectory']['y_coords']
         )))
+
+        # 辅助车道参考线（如匝道）
         self.aux_reference_line = np.array(list(zip(
             self.static_map_data['aux_reference_lanes']['x_coords'],
             self.static_map_data['aux_reference_lanes']['y_coords']
         )))
+
+        # 拟合主参考线用于曲线插值
         self._fit_reference_spline()
-        
-        # 主道参考线
-        self.reference_xy = self.reference_line[::20]  # 每20个点取一个，减少点数
+
+        # =========== Frenet坐标系转换（用于坐标系转换） =============
+        self.reference_xy = self.reference_line[::20]  # 每20个点取一个，降低计算量
         self.xy2Frenet = Frenet_trans(self.reference_xy)
-        
-        # 车辆状态更新和管理
-        self.vehicles = {}
-        self.next_vehicle_id = 0
-        self.ego_vehicle_id = None
-        self.vehicle_model = VehicleKinematicsModel()
-        
-        # TODO：为建立更真实的仿真环境，需要设计车辆的初始化分布和交互模型
-        # 环境车辆初始化
+
+        # ======================== 车辆管理相关 ========================
+        self.vehicles = {}                # 所有车辆对象的字典
+        self.next_vehicle_id = 0         # 分配车辆ID的计数器
+        self.ego_vehicle_id = None       # ego车辆ID
+        self.vehicle_model = VehicleKinematicsModel()  # 车辆动力学模型
+
+        # ego车辆初始化配置
         self.initializer = SingleEgoMergeInitializer(self.static_map_data)
-        
-        # 车辆参数初始化,需要更复杂的符合驾驶人行为建模的参数
-        
         self.ego_config = {
-             'position_index': 50,
-                'velocity': 2,
-                'length': 5.0,
-                'width': 2.0,
-                'lane': 2,
-                'attributes': {'is_ego': True}  
+            'position_index': 50,       # 初始位置在线上的第50个点
+            'velocity': 2,              # 初始速度
+            'length': 5.0,              # 车长
+            'width': 2.0,               # 车宽
+            'lane': 2,                  # 初始车道号
+            'attributes': {'is_ego': True}
         }
 
+        # 环境其他车辆初始化配置
+        # 环境中的车辆数量也需要不一样
         self.env_vehicles_configs = {
-            'num_vehicles': 5,
-            'velocity_range': (5, 6),
-            'length_range': (4.0, 5),
-            'width_range': (1.8, 2.2),
-            'vehicle_spacing': 1.0,  # 数字越大表示生成车辆越稀疏
+            'num_vehicles': 5,                   # 环境中车辆数量
+            'velocity_range': (5, 6),            # 速度范围
+            'length_range': (4.0, 5.0),          # 车长范围
+            'width_range': (1.8, 2.2),           # 车宽范围
+            'vehicle_spacing': 1.0,              # 间隔控制因子，越大越稀疏
             'attributes': {'is_ego': False}
         }
+
+        # ======================== 策略管理 ========================
         self.strategy_manager = StrategyManager()
         self.strategy_func = self.strategy_manager.get_strategy(other_vehicle_strategy)
-        
-        
-        # TODO：后续可能需要考虑更改动作空间维度
-        # Action: [acceleration, steering_angle]
+
+        # ======================== 动作空间定义 ========================
+        # 动作为 [加速度, 转角]，范围均为 [-1, 1]
         self.action_space = spaces.Box(
-            low=np.array([-1, -1]),  # Min acceleration and steering angle
-            high=np.array([1, 1]),   # Max acceleration and steering angle
+            low=np.array([-1, -1]),
+            high=np.array([1, 1]),
             dtype=np.float32
         )
-        
-        # TODO:后续可能需要考虑更改观测空间维度
-        max_vehicles_observed = 5  # Maximum number of surrounding vehicles to observe
-        obs_dim = 4 + max_vehicles_observed * 4  # 4 for ego vehicle + 4 features per surrounding vehicle
-        
+
+        # ======================== 观测空间定义 ========================
+        # 观测为 [ego_x, ego_y, ego_heading, ego_speed, ...] 
+        # 外加最多4辆周围车辆，每辆车用4个特征表示
+        max_vehicles_observed = 4
+        obs_dim = 4 + max_vehicles_observed * 4
+
         self.observation_space = spaces.Box(
-            low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+            low=-np.inf,
+            high=np.inf,
+            shape=(obs_dim,),
+            dtype=np.float32
         )
-        
-        # For rendering
-        if render_mode is not None:
-            self._setup_rendering()
+
+        # ======================== 监控与记录 ========================
+        self.monitor = Monitor(self)
+
+        # ======================== 可视化渲染 ========================
+        self.renderer = Renderer(self) if render_mode is not None else None
+        if self.renderer is not None:
+            self.renderer._setup_rendering()
+
     
     def reset(self, seed=None, options=None):
         """
@@ -204,7 +218,7 @@ class MergeEnv(gym.Env):
         
         # Render if needed
         if self.render_mode == "human":
-            self._render_frame()
+            self.render()
         
         return observation, info
     
@@ -219,7 +233,7 @@ class MergeEnv(gym.Env):
     def step(self, ego_action):
         self.current_step += 1
         # 分发环境车辆获得的观测
-        obs_for_other_vehicles = self.distrub_env_obs()
+        obs_for_other_vehicles = self._distrub_env_obs()
         # 利用定义的World_Model选择环境车辆的动作
         env_actions = self.strategy_func(obs_for_other_vehicles)
         for vid, action in env_actions.items():
@@ -265,33 +279,26 @@ class MergeEnv(gym.Env):
             }
             
             # 监测环境状态
-            env_status = self._check_environment_status()
+            env_status =self.monitor.check_environment_status()
             print(f" Environment Status: {env_status}")
         
         if self.render_mode == "human":
-            self._render_frame()
+            self.render()
         
         return observation, reward, terminated, truncated, info
     
     def render(self):
-        """
-        Render the environment.
-        
-        Returns:
-            If render_mode is 'rgb_array', returns a numpy array of the rendered frame.
-            Otherwise, returns None.
-        """
-        if self.render_mode == "rgb_array":
-            return self._render_frame()
-    
-    def close(self):
-        """Clean up resources"""
-        if self.screen is not None:
-            pygame.quit()
-            self.screen = None
+        if self.renderer:
+            return self.renderer.render_frame()
+        return None
     
 
-    def distrub_env_obs(self):
+    def close(self):
+        if self.renderer:
+            self.renderer.close()
+    
+
+    def _distrub_env_obs(self):
         """获取当前仿真状态，供外部算法使用，包含周围车辆的相对信息"""
         active_vehicles = {}
         distance_threshold = 50.0  # 周围车辆的距离阈值（米）
@@ -399,8 +406,8 @@ class MergeEnv(gym.Env):
             for i in range(max_vehicles_observed):
                 if i < len(surrounding_vehicles):
                     # Add relative x, y position and v
-                    obs.extend([surrounding_vehicles[i][1], surrounding_vehicles[i][2],
-                            surrounding_vehicles[i][3]])
+                    obs.extend([surrounding_vehicles[i][0], surrounding_vehicles[i][1],
+                            surrounding_vehicles[i][2], surrounding_vehicles[i][3]])
                 else:
                     # Pad with zeros if we have fewer vehicles than the maximum
                     obs.extend([0.0, 0.0, 0.0, 0.0])
@@ -422,171 +429,14 @@ class MergeEnv(gym.Env):
     # 检测终止条件
     def _check_termination(self):
         """Check if episode should terminate (collision or off-road)"""
-        ego_is_collision , _ = self._check_ego_collision()
-        ego_off_road = self._check_ego_off_road()
-        ego_reach_end = self._check_reach_end()
-        return ego_is_collision or ego_reach_end or ego_off_road
-    
-    
-    # 检测主车是否到达终点
-    def _check_reach_end(self):
-        """Check if ego vehicle has reached the end of the road"""
-        if self.ego_vehicle_id is not None:
-            ego_vehicle = self.vehicles[self.ego_vehicle_id]
-            # 设计目标终点（应该是一个x，y的范围）
-            if 1032 < ego_vehicle.x < 1035 & 0 < ego_vehicle.y < 2:
-                return True
-        return False
+        ego_is_collision , _ = self.monitor.check_ego_collision()
+        ego_off_road = self.monitor.check_ego_off_road()
+        ego_reach_end = self.monitor.check_reach_end()
+        termination = ego_is_collision or ego_off_road or ego_reach_end
+        return termination 
     
 
-    ##############################################
-    #############碰撞检测与环境监测################
-    #############################################
-    
-    def _get_distance_to_reference_line(self, position):
-        """Calculate distance from a position to the reference line"""
-        # Calculate distances to all points on the reference line
-        distances = np.sqrt(np.sum((self.smooth_reference_line - position) ** 2, axis=1))
-        # Return the minimum distance
-        return np.min(distances) 
-    
-    # 检查主车是否与他车发生碰撞
-    def _check_env_collision(self):
-        """
-        检查环境车辆之间是否发生碰撞，并返回发生碰撞的车辆ID对
-        
-        Returns:
-            tuple: (bool, list) - 第一个元素表示是否发生碰撞，第二个元素是发生碰撞的车辆ID对列表
-        """
-        collision_occurred = False
-        colliding_pairs = []
-        
-        # 检查所有车辆对
-        for vid1, vehicle1 in self.vehicles.items():
-            for vid2, vehicle2 in self.vehicles.items():
-                if vid1 != vid2 and vid1 < vid2:  # 避免重复检查相同的车辆对
-                    distance = np.linalg.norm(vehicle1.x - vehicle2.x)
-                    # 使用车辆长度和宽度的平均值作为碰撞阈值
-                    collision_threshold = (vehicle1.length + vehicle2.length + vehicle1.width + vehicle2.width) / 4.0
-                    
-                    if distance < collision_threshold:
-                        collision_occurred = True
-                        colliding_pairs.append((vid1, vid2))
-        
-        return collision_occurred, colliding_pairs
-
-    # TODO：检查主车是否与环境车辆发生碰撞(分离轴定理或者双圆)
-    def _check_ego_collision(self):
-        """
-        检查主车是否与环境车辆发生碰撞，并返回与主车发生碰撞的环境车辆ID
-        
-        Returns:
-            tuple: (bool, list) - 第一个元素表示主车是否发生碰撞，第二个元素是与主车发生碰撞的环境车辆ID列表
-        """
-        if not hasattr(self, 'ego_vehicle_id') or self.ego_vehicle_id not in self.vehicles:
-            return False, []
-            
-        ego_collision = False
-        colliding_with_ego = []
-        
-        ego_vehicle = self.vehicles[self.ego_vehicle_id]
-        
-        for vid, vehicle in self.vehicles.items():
-            if vid != self.ego_vehicle_id:
-                iscollsion = ColliTest(ego_vehicle, vehicle, ego_vehicle.length, ego_vehicle.width)# 检测碰撞          
-                if iscollsion:
-                    ego_collision = True
-                    colliding_with_ego.append(vid)
-        
-        return ego_collision, colliding_with_ego
-
-    def _check_env_off_road(self):
-        """
-        检查环境车辆是否超出道路边界约束，并返回超出边界的车辆ID
-        
-        Returns:
-            tuple: (bool, list) - 第一个元素表示是否有车辆超出边界，第二个元素是超出边界的车辆ID列表
-        """
-        off_road_occurred = False
-        off_road_vehicles = []
-        
-        for vid, vehicle in self.vehicles.items():
-            # 跳过主车的检测，主车会在_check_ego_off_road中检测
-            if hasattr(self, 'ego_vehicle_id') and vid == self.ego_vehicle_id:
-                continue
-                
-            position = [vehicle.x, vehicle.y]
-            distance_to_ref = self._get_distance_to_reference_line(position)
-            
-            # 超出参考线一定距离视为超出道路边界
-            road_width_threshold = 3.0
-            if distance_to_ref > road_width_threshold:
-                off_road_occurred = True
-                off_road_vehicles.append(vid)
-        
-        return off_road_occurred, off_road_vehicles
-
-    def _check_ego_off_road(self):
-        """
-        检查主车是否超出道路边界约束
-        
-        Returns:
-            bool: 主车是否超出道路边界
-        """
-        if not hasattr(self, 'ego_vehicle_id') or self.ego_vehicle_id not in self.vehicles:
-            return False
-            
-        ego_vehicle = self.vehicles[self.ego_vehicle_id]
-        position = [ego_vehicle.x, ego_vehicle.y]
-        distance_to_ref = self._get_distance_to_reference_line(position)
-        
-        # 超出参考线一定距离视为超出道路边界
-        road_width_threshold = 200
-        return distance_to_ref > road_width_threshold
-
-    # 添加一个综合检测函数，在仿真中监测环境状态
-    def _check_environment_status(self):
-        """
-        综合检测环境状态，包括车辆碰撞和道路边界情况，同时包含主车的状态
-        
-        Returns:
-            dict: 包含环境状态的字典，包括碰撞和超出边界信息
-        """
-        # 检测环境车辆之间的碰撞
-        env_collision_status, env_collision_pairs = self._check_env_collision()
-        
-        # 检测主车与环境车辆的碰撞
-        ego_collision_status, ego_collision_vehicles = self._check_ego_collision()
-        
-        # 检测环境车辆是否超出道路边界
-        env_off_road_status, env_off_road_ids = self._check_env_off_road()
-        
-        # 检测主车是否超出道路边界
-        ego_off_road_status = self._check_ego_off_road()
-        
-        status = {
-            # 环境车辆碰撞状态
-            "env_collision": env_collision_status,
-            "env_colliding_pairs": env_collision_pairs,
-            
-            # 主车碰撞状态
-            "ego_collision": ego_collision_status,
-            "ego_colliding_with": ego_collision_vehicles,
-            
-            # 环境车辆超出道路边界状态
-            "env_off_road": env_off_road_status, 
-            "env_off_road_ids": env_off_road_ids,
-            
-            # 主车超出道路边界状态
-            "ego_off_road": ego_off_road_status
-        }
-        
-        return status
-    
-    ##############################################
-    ##################渲染与绘图###################
-    ##############################################
-    
+    # 拟合参考线
     def _fit_reference_spline(self):
         """Fit a spline curve to the reference line"""
         x = self.reference_line[:, 0]
@@ -595,169 +445,7 @@ class MergeEnv(gym.Env):
         u_fine = np.linspace(0, 1, 1000)
         self.smooth_reference_line = np.array(splev(u_fine, tck)).T
     
-    def _setup_rendering(self):
-            """Set up rendering environment"""
-            pygame.init()
-            
-            # Calculate coordinate ranges and scaling
-            all_points = np.vstack((self.map_dict['upper_boundary'], self.map_dict['main_lower_boundary'], self.reference_line))
-            if 'auxiliary_dotted_line' in self.map_dict and len(self.map_dict['auxiliary_dotted_line']) > 0:
-                all_points = np.vstack((all_points, self.map_dict['auxiliary_dotted_line']))
-            self.min_x, self.min_y = np.min(all_points, axis=0)
-            self.max_x, self.max_y = np.max(all_points, axis=0)
-            
-            # Add padding
-            padding = 1.0
-            self.min_x -= padding
-            self.max_x += padding
-            self.min_y -= padding
-            self.max_y += padding
-            
-            # Calculate scale
-            range_x = self.max_x - self.min_x
-            range_y = self.max_y - self.min_y
-            self.scale = min(WINDOW_WIDTH / range_x, WINDOW_HEIGHT / range_y)
-            self.scale_x = self.scale
-            self.scale_y = self.scale
-            
-            # Prepare pixel points for rendering
-            self._prepare_pixel_points()
-            
-            # Initialize pygame screen and clock
-            self.screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
-            pygame.display.set_caption("Traffic Merge RL Environment")
-            self.clock = pygame.time.Clock()
-            self.font = pygame.font.SysFont('Arial', 16)
-    
-    def _prepare_pixel_points(self):
-        """Prepare pixel coordinates for map elements"""
-        upper_points = self.map_dict['upper_boundary']
-        lower_points = self.map_dict['main_lower_boundary'][::-1]
-        road_points = np.vstack((upper_points, lower_points))
-        
-        self.road_pixel_points = [self._map_to_pixel(x, y) for x, y in road_points]
-        self.upper_pixel_points = [self._map_to_pixel(x, y) for x, y in self.map_dict['upper_boundary']]
-        self.lower_pixel_points = [self._map_to_pixel(x, y) for x, y in self.map_dict['main_lower_boundary']]
-        self.reference_pixel_points = [self._map_to_pixel(x, y) for x, y in self.smooth_reference_line]
-        self.aux_reference_pixel_points = [self._map_to_pixel(x, y) for x, y in self.aux_reference_line]
-        
-        if 'auxiliary_dotted_line' in self.map_dict:
-            self.auxiliary_dotted_line_pixel_points = [self._map_to_pixel(x, y) for x, y in self.map_dict['auxiliary_dotted_line']]
-        else:
-            self.auxiliary_dotted_line_pixel_points = []
-    
-    def _map_to_pixel(self, x, y):
-        """Convert map coordinates to pixel coordinates"""
-        pixel_x = (x - self.min_x) * self.scale_x
-        pixel_y = WINDOW_HEIGHT - (y - self.min_y) * self.scale_y
-        return int(pixel_x), int(pixel_y)
-    
-    def _render_frame(self):
-        """Render the current state of the environment"""
-        if self.render_mode is None:
-            return None
-            
-        if self.screen is None:
-            self._setup_rendering()
-        
-        # Fill background
-        self.screen.fill(BACKGROUND_COLOR)
-        
-        # Draw road
-        pygame.draw.polygon(self.screen, ROAD_COLOR, self.road_pixel_points)
-        pygame.draw.lines(self.screen, BOUNDARY_COLOR, False, self.upper_pixel_points, 3)
-        pygame.draw.lines(self.screen, BOUNDARY_COLOR, False, self.lower_pixel_points, 3)
-        
-        # Draw reference line
-        pygame.draw.lines(self.screen, (0, 0, 0), False, self.reference_pixel_points, 1)
-        pygame.draw.lines(self.screen, (0, 0, 0), False, self.aux_reference_pixel_points, 1)
-        
-        # Draw dotted line if exists
-        if self.auxiliary_dotted_line_pixel_points:
-            for i in range(0, len(self.auxiliary_dotted_line_pixel_points) - 1, 2):
-                if i + 1 < len(self.auxiliary_dotted_line_pixel_points):
-                    start_pos = self.auxiliary_dotted_line_pixel_points[i]
-                    end_pos = self.auxiliary_dotted_line_pixel_points[i + 1]
-                    pygame.draw.line(self.screen, BOUNDARY_COLOR, start_pos, end_pos, 2)
-        
-        # Draw vehicles
-        for vid, vehicle in self.vehicles.items():
-            # Get vehicle center position and heading
-            center_x = vehicle.x
-            center_y = vehicle.y
-            heading = vehicle.heading
-            length = vehicle.length
-            width = vehicle.width
-            
-            # Calculate local coordinates of corners (unrotated)
-            half_length = length / 2
-            half_width = width / 2
-            local_points = [
-                [-half_length, -half_width],  # bottom-left
-                [-half_length, half_width],   # top-left
-                [half_length, half_width],    # top-right
-                [half_length, -half_width]    # bottom-right
-            ]
-            
-            # Apply rotation matrix
-            cos_theta = np.cos(heading)
-            sin_theta = np.sin(heading)
-            rotation_matrix = np.array([[cos_theta, -sin_theta], [sin_theta, cos_theta]])
-            
-            # Rotate and translate to global coordinates
-            global_points = []
-            for local_x, local_y in local_points:
-                rotated_point = np.dot(rotation_matrix, [local_x, local_y])
-                global_x = center_x + rotated_point[0]
-                global_y = center_y + rotated_point[1]
-                global_points.append([global_x, global_y])
-            
-            # Convert to pixel coordinates
-            pixel_points = [self._map_to_pixel(x, y) for x, y in global_points]
-            
-            # Draw vehicle with different colors for ego and environment vehicles
-            if vid == self.ego_vehicle_id:
-                color = (0, 0, 255)  # Blue for ego vehicle
-                
-                # Draw direction indicator for ego vehicle
-                front_center = [center_x + np.cos(heading) * half_length, 
-                                center_y + np.sin(heading) * half_length]
-                direction_end = [front_center[0] + np.cos(heading) * (length / 2), 
-                                front_center[1] + np.sin(heading) * (length / 2)]
-                pygame.draw.line(self.screen, (255, 255, 0), 
-                                self._map_to_pixel(front_center[0], front_center[1]),
-                                self._map_to_pixel(direction_end[0], direction_end[1]), 2)
-            else:
-                color = (0, 255, 0)  # green for environment vehicles
-            
-            # Draw vehicle polygon
-            pygame.draw.polygon(self.screen, color, pixel_points)
-        
-        # Draw information text
-        info_text = f"Frame: {self.current_step} | Vehicles: {len(self.vehicles)}"
-        info_surface = self.font.render(info_text, True, (255, 255, 255))
-        self.screen.blit(info_surface, (10, 10))
-        
-        # If ego vehicle exists, display its information
-        if self.ego_vehicle_id in self.vehicles:
-            ego_vehicle = self.vehicles[self.ego_vehicle_id]
-            ego_speed = np.linalg.norm(ego_vehicle.v)
-            ego_heading_deg = np.degrees(ego_vehicle.heading) % 360
-            ego_info = f"Ego Speed: {ego_speed:.2f} m/s | Heading: {ego_heading_deg:.1f}°"
-            ego_surface = self.font.render(ego_info, True, (0, 255, 255))
-            self.screen.blit(ego_surface, (10, 30))
-        
-        # Update the display
-        pygame.display.flip()
-        
-        # Control the frame rate
-        self.clock.tick(self.metadata["render_fps"])
-        
-        # Return the rendered frame if needed
-        if self.render_mode == "rgb_array":
-            return np.transpose(
-                np.array(pygame.surfarray.pixels3d(self.screen)), axes=(1, 0, 2)
-            )
+
 
 def make_env(map_path="LM_env/LM_map/LM_static_map.pkl", render_mode=None, max_episode_steps=500):
     """Factory function to create the environment with specified parameters"""
@@ -801,4 +489,3 @@ if __name__ == "__main__":
             if terminated or truncated:
                 print("Episode ended")
                 break
-        
