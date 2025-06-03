@@ -8,7 +8,7 @@ class Monitor:
 
     def get_distance_to_reference_line(self, position):
         """Calculate distance from a position to the reference line."""
-        distances = np.sqrt(np.sum((self.env.smooth_reference_line - position) ** 2, axis=1))
+        distances = np.sqrt(np.sum((self.env.reference_line - position) ** 2, axis=1))
         return np.min(distances)
 
     def check_env_collision(self):

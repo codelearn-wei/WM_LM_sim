@@ -1,25 +1,6 @@
 import numpy as np
 from LM_env.utils.Vehicle_model import Vehicle
 
-
-# 现在可用于初始化的对象：
-#! 单车智能汇入模式
-# 1、主道参考线（生成环境车辆）
-# 2、辅道参考线（生成主车）
-#! 多车智能汇入模式
-# 1、主道参考线（生成主道环境车辆）
-# 2、辅道参考线（生成多辆主车）
-#! 随机汇流汇入模式
-# 1、主道参考线（生成环境车辆和主车）
-# 2、辅道参考线（生成多辆主车）
-
-# TODO：初始化一定要数据样本多样
-# TODO：初始化的车辆数量要可调
-# TODO：初始化车的行为要符合实际的数据
-# TODO：初始化主道车辆要能一直生成，一直添加
-# TODO：初始化主车的行为要为强化学习服务
-# TODO：要定义好什么车大概率不让，大概率让（和当前情况和驾驶风格，决策价值观都有关系）
-
 class SimulationInitializer:
     """仿真初始化基类，提供通用功能"""
     def __init__(self, static_map, n_lanes=3, lane_width=3.5, min_point_spacing=8.0):
@@ -121,10 +102,12 @@ class SimulationInitializer:
         """抽象方法，子类需实现"""
         raise NotImplementedError("子类必须实现此方法")
 
+
 class SingleEgoMergeInitializer(SimulationInitializer):
-    """单车智能汇入模式：主车在辅道，环境车辆在主道"""
+    """Single vehicle intelligent merge mode: ego vehicle on auxiliary road, environment vehicles on main road"""
     def get_simulation_init_states(self, ego_config, env_vehicles_configs=None):
-        # 创建主车（在辅道上）
+        
+        # Create ego vehicle (on auxiliary road)
         ego_vehicle = None
         if ego_config:
             pos_idx = ego_config.get('position_index', 0)
@@ -132,12 +115,13 @@ class SingleEgoMergeInitializer(SimulationInitializer):
             velocity = ego_config.get('velocity', 1.0)
             length = ego_config.get('length', 5.0)
             width = ego_config.get('width', 2.0)
+            # Add game-theoretic parameters to ego vehicle attributes
             attributes = ego_config.get('attributes', {'isego': True})
             ego_vehicle = self.create_vehicle(
                 self.aux_reference_xy, self.aux_s_values, pos_idx, velocity, length, width, lane, **attributes
             )
 
-        # 创建环境车辆（在主道上）
+        # TODO:需要进一步添加重要的预测参数
         env_vehicles = []
         if isinstance(env_vehicles_configs, dict):
             num_vehicles = env_vehicles_configs.get('num_vehicles', 0)
@@ -152,103 +136,114 @@ class SingleEgoMergeInitializer(SimulationInitializer):
                 velocity = np.random.uniform(velocity_range[0], velocity_range[1])
                 length = np.random.uniform(length_range[0], length_range[1])
                 width = np.random.uniform(width_range[0], width_range[1])
+                # Add game-theoretic parameters to environment vehicle attributes
+                vehicle_attributes = common_attributes.copy()
+                
+                # 初始化博弈权重系数
+                # !可以添加更多的模型参数，用于生成更多更真实的换道行为
+                vehicle_attributes['isego'] = False
+                vehicle_attributes['params'] = env_vehicles_configs['attributes']['params']
                 vehicle = self.create_vehicle(
-                    self.reference_xy, self.s_values, pos_idx, velocity, length, width, lane, **common_attributes
+                    self.reference_xy, self.s_values, pos_idx, velocity, length, width, lane, **vehicle_attributes
                 )
                 env_vehicles.append(vehicle)
 
         return ego_vehicle, env_vehicles
 
-class MultiEgoMergeInitializer(SimulationInitializer):
-    """多车智能汇入模式：多辆主车在辅道，环境车辆在主道"""
-    def get_simulation_init_states(self, multi_ego_configs, env_vehicles_configs=None):
-        # 创建多辆主车（在辅道上）
-        ego_vehicles = []
-        if isinstance(multi_ego_configs, list):
-            spawn_points = self.select_spawn_points(self.aux_reference_xy, self.aux_s_values, len(multi_ego_configs), self.min_point_spacing)
-            for i, config in enumerate(multi_ego_configs):
-                pos_idx = spawn_points[i] if i < len(spawn_points) else config.get('position_index', 0)
-                lane = config.get('lane', 0)
-                velocity = config.get('velocity', 1.0)
-                length = config.get('length', 5.0)
-                width = config.get('width', 2.0)
-                attributes = config.get('attributes', {'isego': True})
-                vehicle = self.create_vehicle(
-                    self.aux_reference_xy, self.aux_s_values, pos_idx, velocity, length, width, lane, **attributes
-                )
-                ego_vehicles.append(vehicle)
 
-        # 创建环境车辆（在主道上）
-        env_vehicles = []
-        if isinstance(env_vehicles_configs, dict):
-            num_vehicles = env_vehicles_configs.get('num_vehicles', 0)
-            velocity_range = env_vehicles_configs.get('velocity_range', (0, 30))
-            length_range = env_vehicles_configs.get('length_range', (4.0, 5.5))
-            width_range = env_vehicles_configs.get('width_range', (2, 2.1))
-            common_attributes = env_vehicles_configs.get('attributes', {'isego': False})
-            spawn_points = self.select_spawn_points(self.reference_xy, self.s_values, num_vehicles, self.min_point_spacing)
 
-            for pos_idx in spawn_points:
-                lane = np.random.randint(0, self.n_lanes)
-                velocity = np.random.uniform(velocity_range[0], velocity_range[1])
-                length = np.random.uniform(length_range[0], length_range[1])
-                width = np.random.uniform(width_range[0], width_range[1])
-                vehicle = self.create_vehicle(
-                    self.reference_xy, self.s_values, pos_idx, velocity, length, width, lane, **common_attributes
-                )
-                env_vehicles.append(vehicle)
 
-        return ego_vehicles, env_vehicles
 
-class RandomMergeInitializer(SimulationInitializer):
-    """随机汇流汇入模式：主车在主道和辅道，环境车辆在主道"""
-    def get_simulation_init_states(self, ego_config, env_vehicles_configs=None):
-        # 创建主车（主道和辅道）
-        ego_vehicles = []
-        if isinstance(ego_config, dict):
-            if 'main' in ego_config:
-                for config in ego_config['main']:
-                    pos_idx = config.get('position_index', 0)
-                    lane = config.get('lane', 0)
-                    velocity = config.get('velocity', 1.0)
-                    length = config.get('length', 5.0)
-                    width = config.get('width', 2.0)
-                    attributes = config.get('attributes', {'isego': True})
-                    vehicle = self.create_vehicle(
-                        self.reference_xy, self.s_values, pos_idx, velocity, length, width, lane, **attributes
-                    )
-                    ego_vehicles.append(vehicle)
-            if 'aux' in ego_config:
-                for config in ego_config['aux']:
-                    pos_idx = config.get('position_index', 0)
-                    lane = config.get('lane', 0)
-                    velocity = config.get('velocity', 1.0)
-                    length = config.get('length', 5.0)
-                    width = config.get('width', 2.0)
-                    attributes = config.get('attributes', {'isego': True})
-                    vehicle = self.create_vehicle(
-                        self.aux_reference_xy, self.aux_s_values, pos_idx, velocity, length, width, lane, **attributes
-                    )
-                    ego_vehicles.append(vehicle)
+# class MultiEgoMergeInitializer(SimulationInitializer):
+#     """多车智能汇入模式：多辆主车在辅道，环境车辆在主道"""
+#     def get_simulation_init_states(self, multi_ego_configs, env_vehicles_configs=None):
+#         # 创建多辆主车（在辅道上）
+#         ego_vehicles = []
+#         if isinstance(multi_ego_configs, list):
+#             spawn_points = self.select_spawn_points(self.aux_reference_xy, self.aux_s_values, len(multi_ego_configs), self.min_point_spacing)
+#             for i, config in enumerate(multi_ego_configs):
+#                 pos_idx = spawn_points[i] if i < len(spawn_points) else config.get('position_index', 0)
+#                 lane = config.get('lane', 0)
+#                 velocity = config.get('velocity', 1.0)
+#                 length = config.get('length', 5.0)
+#                 width = config.get('width', 2.0)
+#                 attributes = config.get('attributes', {'isego': True})
+#                 vehicle = self.create_vehicle(
+#                     self.aux_reference_xy, self.aux_s_values, pos_idx, velocity, length, width, lane, **attributes
+#                 )
+#                 ego_vehicles.append(vehicle)
 
-        # 创建环境车辆（在主道上）
-        env_vehicles = []
-        if isinstance(env_vehicles_configs, dict):
-            num_vehicles = env_vehicles_configs.get('num_vehicles', 0)
-            velocity_range = env_vehicles_configs.get('velocity_range', (0, 30))
-            length_range = env_vehicles_configs.get('length_range', (4.0, 5.5))
-            width_range = env_vehicles_configs.get('width_range', (2, 2.1))
-            common_attributes = env_vehicles_configs.get('attributes', {'isego': False})
-            spawn_points = self.select_spawn_points(self.reference_xy, self.s_values, num_vehicles, self.min_point_spacing)
+#         # 创建环境车辆（在主道上）
+#         env_vehicles = []
+#         if isinstance(env_vehicles_configs, dict):
+#             num_vehicles = env_vehicles_configs.get('num_vehicles', 0)
+#             velocity_range = env_vehicles_configs.get('velocity_range', (0, 30))
+#             length_range = env_vehicles_configs.get('length_range', (4.0, 5.5))
+#             width_range = env_vehicles_configs.get('width_range', (2, 2.1))
+#             common_attributes = env_vehicles_configs.get('attributes', {'isego': False})
+#             spawn_points = self.select_spawn_points(self.reference_xy, self.s_values, num_vehicles, self.min_point_spacing)
 
-            for pos_idx in spawn_points:
-                lane = np.random.randint(0, self.n_lanes)
-                velocity = np.random.uniform(velocity_range[0], velocity_range[1])
-                length = np.random.uniform(length_range[0], length_range[1])
-                width = np.random.uniform(width_range[0], width_range[1])
-                vehicle = self.create_vehicle(
-                    self.reference_xy, self.s_values, pos_idx, velocity, length, width, lane, **common_attributes
-                )
-                env_vehicles.append(vehicle)
+#             for pos_idx in spawn_points:
+#                 lane = np.random.randint(0, self.n_lanes)
+#                 velocity = np.random.uniform(velocity_range[0], velocity_range[1])
+#                 length = np.random.uniform(length_range[0], length_range[1])
+#                 width = np.random.uniform(width_range[0], width_range[1])
+#                 vehicle = self.create_vehicle(
+#                     self.reference_xy, self.s_values, pos_idx, velocity, length, width, lane, **common_attributes
+#                 )
+#                 env_vehicles.append(vehicle)
 
-        return ego_vehicles, env_vehicles
+#         return ego_vehicles, env_vehicles
+
+# class RandomMergeInitializer(SimulationInitializer):
+#     """随机汇流汇入模式：主车在主道和辅道，环境车辆在主道"""
+#     def get_simulation_init_states(self, ego_config, env_vehicles_configs=None):
+#         # 创建主车（主道和辅道）
+#         ego_vehicles = []
+#         if isinstance(ego_config, dict):
+#             if 'main' in ego_config:
+#                 for config in ego_config['main']:
+#                     pos_idx = config.get('position_index', 0)
+#                     lane = config.get('lane', 0)
+#                     velocity = config.get('velocity', 1.0)
+#                     length = config.get('length', 5.0)
+#                     width = config.get('width', 2.0)
+#                     attributes = config.get('attributes', {'isego': True})
+#                     vehicle = self.create_vehicle(
+#                         self.reference_xy, self.s_values, pos_idx, velocity, length, width, lane, **attributes
+#                     )
+#                     ego_vehicles.append(vehicle)
+#             if 'aux' in ego_config:
+#                 for config in ego_config['aux']:
+#                     pos_idx = config.get('position_index', 0)
+#                     lane = config.get('lane', 0)
+#                     velocity = config.get('velocity', 1.0)
+#                     length = config.get('length', 5.0)
+#                     width = config.get('width', 2.0)
+#                     attributes = config.get('attributes', {'isego': True})
+#                     vehicle = self.create_vehicle(
+#                         self.aux_reference_xy, self.aux_s_values, pos_idx, velocity, length, width, lane, **attributes
+#                     )
+#                     ego_vehicles.append(vehicle)
+
+#         # 创建环境车辆（在主道上）
+#         env_vehicles = []
+#         if isinstance(env_vehicles_configs, dict):
+#             num_vehicles = env_vehicles_configs.get('num_vehicles', 0)
+#             velocity_range = env_vehicles_configs.get('velocity_range', (0, 30))
+#             length_range = env_vehicles_configs.get('length_range', (4.0, 5.5))
+#             width_range = env_vehicles_configs.get('width_range', (2, 2.1))
+#             common_attributes = env_vehicles_configs.get('attributes', {'isego': False})
+#             spawn_points = self.select_spawn_points(self.reference_xy, self.s_values, num_vehicles, self.min_point_spacing)
+
+#             for pos_idx in spawn_points:
+#                 lane = np.random.randint(0, self.n_lanes)
+#                 velocity = np.random.uniform(velocity_range[0], velocity_range[1])
+#                 length = np.random.uniform(length_range[0], length_range[1])
+#                 width = np.random.uniform(width_range[0], width_range[1])
+#                 vehicle = self.create_vehicle(
+#                     self.reference_xy, self.s_values, pos_idx, velocity, length, width, lane, **common_attributes
+#                 )
+#                 env_vehicles.append(vehicle)
+
+#         return ego_vehicles, env_vehicles

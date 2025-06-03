@@ -1,3 +1,4 @@
+# 获得划分的每个场景的数据
 import os
 import pickle
 from get_all_frame_data import frame_data, load_frame_data

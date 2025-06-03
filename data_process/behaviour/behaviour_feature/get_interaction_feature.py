@@ -1,9 +1,7 @@
+# 储存交互特征
 import math
-import numpy as np
 import pickle
 import os
-import matplotlib.pyplot as plt
-from collections import defaultdict
 
 def extract_interaction_features(merging_trajectories):
     """

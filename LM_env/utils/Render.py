@@ -60,8 +60,8 @@ class Renderer:
         self.road_pixel_points = [self._map_to_pixel(x, y) for x, y in road_points]
         self.upper_pixel_points = [self._map_to_pixel(x, y) for x, y in self.env.map_dict['upper_boundary']]
         self.lower_pixel_points = [self._map_to_pixel(x, y) for x, y in self.env.map_dict['main_lower_boundary']]
-        self.reference_pixel_points = [self._map_to_pixel(x, y) for x, y in self.env.smooth_reference_line]
-        self.aux_reference_pixel_points = [self._map_to_pixel(x, y) for x, y in self.env.aux_reference_line]
+        self.reference_pixel_points = [self._map_to_pixel(x, y) for x, y in self.env.reference_line]
+        self.aux_reference_pixel_points = [self._map_to_pixel(x, y) for x, y in self.env.reference_line]
         
         if 'auxiliary_dotted_line' in self.env.map_dict:
             self.auxiliary_dotted_line_pixel_points = [self._map_to_pixel(x, y) for x, y in self.env.map_dict['auxiliary_dotted_line']]

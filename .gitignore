@@ -24,6 +24,10 @@ trajectory_outputs
 data_process/behaviour/results
 data_process/behaviour/data
 data_process/behaviour/IRL_value/IRL_tra/tra_data
+Mamba_attn_agent_pred/src/datasets/data
+Mamba_attn_agent_pred/logs
+Mamba_attn_agent_pred/checkpoints_ego
+Mamba_attn_agent_pred/checkpoints
 
 # 忽略所有 __pycache__ 目录
 __pycache__/

@@ -1,3 +1,4 @@
+# 组织获得交互场景数据，建模和价值分析都基于此展开
 import os
 import pickle
 import math
@@ -370,7 +371,7 @@ def main():
     print(f"有 {scenarios_with_bbzv} 个场景包含BBZV车辆")
     
     # 保存结果
-    output_file = os.path.join(result_path, 'merging_vehicles_trajectories.pkl')
+    output_file = os.path.join(result_path, 'merging_vehicles_interactions_trajectories.pkl')
     with open(output_file, 'wb') as f:
         pickle.dump(merging_trajectories, f)
     

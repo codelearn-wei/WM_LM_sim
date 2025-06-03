@@ -16,44 +16,7 @@ class BoundaryProcessor:
         self.range_indices = np.arange(0, self.num_segments, segment_size)
 
 
-    def find_closest_index(self, x: float) -> int:
-        """Find the index of the closest x-coordinate using binary search."""
-        idx = bisect_left(self.x_coords, x)
-        if idx == 0:
-            return 0
-        if idx == len(self.x_coords):
-            return len(self.x_coords) - 1
-        return idx - 1 if (x - self.x_coords[idx - 1]) < (self.x_coords[idx] - x) else idx
-    
-    def get_min_distances(self, points: np.ndarray) -> np.ndarray:
-        if len(points) == 0:
-            return np.array([])
 
-        x_coords = points[:, 0]
-        # Find approximate segment range for each point
-        start_idx = np.searchsorted(self.x_coords[:-1], x_coords, side='left')
-        start_idx = np.clip(start_idx, 0, self.num_segments - 1)
-        # Define a window of segments to check
-        window_size = 5  # Adjustable parameter
-        seg_starts = np.maximum(start_idx - window_size, 0)
-        seg_ends = np.minimum(start_idx + window_size, self.num_segments)
-
-        min_dists = np.full(len(points), np.inf)
-        for i, (start, end) in enumerate(zip(seg_starts, seg_ends)):
-            p = points[i:i+1, np.newaxis, :]  # (1, 1, 2)
-            local_segments = self.segments[start:end, :, np.newaxis, :]  # (local_n, 2, 1, 2)
-            seg_start = local_segments[:, 0]
-            seg_end = local_segments[:, 1]
-            seg_vec = seg_end - seg_start
-            start_to_p = p - seg_start
-            seg_len_sq = np.sum(seg_vec ** 2, axis=2, keepdims=True)
-            t = np.sum(start_to_p * seg_vec, axis=2, keepdims=True) / (seg_len_sq + 1e-9)
-            t = np.clip(t, 0, 1)
-            closest = seg_start + t * seg_vec
-            dist = np.linalg.norm(p - closest, axis=2)
-            min_dists[i] = np.min(dist)
-
-        return min_dists
 
     def is_below_batch(self, points: np.ndarray) -> np.ndarray:
         """Check if points are below the boundary in batch."""
@@ -82,16 +45,6 @@ class BoundaryProcessor:
         final_idx = np.where(closer_left, left_idx, right_idx)
         return y_coords > self.sorted_boundary[final_idx, 1]
 
-    def get_min_distance(self, x: float, y: float) -> float:
-        """Calculate the minimum distance to the boundary segments."""
-        point = np.array([x, y])
-        segments = np.stack([self.sorted_boundary[:-1], self.sorted_boundary[1:]], axis=1)
-        distances = np.array([
-            np.linalg.norm(np.cross(segments[i, 1] - segments[i, 0], segments[i, 0] - point)) / 
-            np.linalg.norm(segments[i, 1] - segments[i, 0])
-            for i in range(len(segments))
-        ])
-        return np.min(distances)
     
 def organize_by_frame(vehicles):
     """Organize vehicle data by frame, including all vehicle info per frame."""

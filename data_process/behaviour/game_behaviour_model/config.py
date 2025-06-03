@@ -6,7 +6,7 @@ SCREEN_HEIGHT = 600
 
 # IDM (Intelligent Driver Model) Parameters
 IDM_PARAMS = {
-    'v0': 20.0,    # Desired velocity
+    'v0': 6.0,    # Desired velocity
     's0': 2.0,     # Minimum spacing
     'T': 1.5,      # Time headway
     'a_max': 1.5,  # Maximum acceleration

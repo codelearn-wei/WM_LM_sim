@@ -1,0 +1,36 @@
+model:
+  type: 'BaseModel'
+  args:
+    input_dim: 4  # [x, y, vx, vy]
+    hidden_dim: 128
+    output_dim: 4  # [x, y, vx, vy]
+    num_layers: 3
+
+dataset:
+  type: 'BaseDataset'
+  args:
+    data_path: 'data/trajectories'
+    sequence_length: 20
+    prediction_horizon: 10
+    train_val_split: 0.8
+
+train:
+  batch_size: 32
+  epochs: 100
+  num_workers: 4
+  save_interval: 5
+  learning_rate: 0.001
+
+optimizer:
+  type: 'Adam'
+  args:
+    lr: 0.001
+    weight_decay: 0.0001
+
+scheduler:
+  type: 'ReduceLROnPlateau'
+  args:
+    mode: 'min'
+    factor: 0.5
+    patience: 5
+    verbose: true 

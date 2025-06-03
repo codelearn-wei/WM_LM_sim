@@ -17,6 +17,7 @@ from train_raw_data import (
 #! 三种功能
 #! 1. 生成回放场景视频
 #! 2. 生成真实训练BEV图像
+#! 3.生成轨迹预测数据集
 
 class LaneMergingDataProcessor:
     def __init__(self, map_path: str, base_data_path: str):

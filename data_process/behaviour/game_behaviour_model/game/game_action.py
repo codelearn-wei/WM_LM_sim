@@ -51,15 +51,3 @@ class ActionSpace:
     def get_actions(self, role: VehicleRole):
         return self.action_space[role]
  
- 
-  
-    
-# 动作空间设置2：
-# MAIN_INTERACTIVE多种动作：
-# 1、采样一系列的加速的轨迹（加速，减速，维持IDM跟车）基于逆强化学习
-
-
-# 辅道车辆的多种动作：
-# 1、规划一条换道轨迹
-# 2、采样一系列的加速度轨迹
-# 3、维持IDM跟主道前车

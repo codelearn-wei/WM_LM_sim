@@ -1,4 +1,4 @@
-import sys
+# 获得每一条的轨迹数据
 from pathlib import Path
 import pickle
 from data_process.train_raw_data import organize_by_frame, classify_vehicles_by_frame_1

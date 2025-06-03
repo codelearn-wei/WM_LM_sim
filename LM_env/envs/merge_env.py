@@ -1,3 +1,4 @@
+
 #! 搭建merge的强化学习训练环境
 import gymnasium as gym
 from gymnasium import spaces
@@ -5,11 +6,9 @@ import numpy as np
 import pickle
 from scipy.interpolate import splprep, splev
 
-# 主车道策略交互函数
 from LM_env.interaction_model.initial import SingleEgoMergeInitializer
 from LM_env.interaction_model.strategy import StrategyManager
 
-# 工具函数
 from LM_env.utils.Vehicle_model import VehicleKinematicsModel , Vehicle
 from LM_env.utils.Frenet_Trans import *
 from LM_env.utils.Render import Renderer
@@ -17,14 +16,6 @@ from LM_env.utils.Monitor import Monitor
 
 
 # TODO:仿真器搭建还有以下工作（已完成主体函数框架）：
-# 1、StrategyManager类，现在是简单的IDM策略，需要建模汇入场景的环境，实现基于交互的策略。（重点，难点。考虑数据分布，决策价值观，世界模型的建立和群体收益等）
-
-# 2、仿真器的初始化函数，需要根据场景初始化主车和环境车辆的状态，包括位置，速度，航向等。（主要结合数据分布去构建，考虑初始位置生成的合理性）
-
-# 3、在建模前面两个函数模型的时候，需要同时修改Merge_env中的接口，使得仿真器和环境接口一致，方便后续的训练和测试，同时要不断优化仿真器的关键函数。
-
-# 4、考虑变道主车的的行为学习，基于规则或基于强化学习方法实现，探索多车联合决策的可能性。
-
 
 def load_map_data(map_path):
     """Load and process map data from a pickle file."""
@@ -90,6 +81,7 @@ class MergeEnv(gym.Env):
         self.xy2Frenet = Frenet_trans(self.reference_xy)
 
         # ======================== 车辆管理相关 ========================
+        
         self.vehicles = {}                # 所有车辆对象的字典
         self.next_vehicle_id = 0         # 分配车辆ID的计数器
         self.ego_vehicle_id = None       # ego车辆ID
@@ -97,24 +89,33 @@ class MergeEnv(gym.Env):
 
         # ego车辆初始化配置
         self.initializer = SingleEgoMergeInitializer(self.static_map_data)
+        self.ego_params = {}
+        
+        
+        # TODO：需要修改博弈的收益函数，现在的收益权重有问题，不能让主道车辆改变自己的行为。
+        #! 当前社会收益、合作收益体现不够明显
+        #! 现在尝试去体现了利他收益和利己收益
+        self.env_params = {'main_comfort_weight': 0.5, 'main_safety_weight': 1, 'main_efficiency_weight': 0.4,'main_altruistic_weight': 0,
+                        'aux_comfort_weight': 1, 'aux_safety_weight': 1, 'aux_efficiency_weight': 2,'aux_pressure_weight' : 0,'aux_altruistic_weight': 0.2,
+                        'Rationality_main' : 0.2, 'Rationality_aux' : 0.5,  'idm_params':{'v0': 2, 'a_max': 1.0, 'b': 2, 's0': 2.0, 'T': 2}}
+        
         self.ego_config = {
-            'position_index': 50,       # 初始位置在线上的第50个点
-            'velocity': 2,              # 初始速度
+            'position_index': 40,       # 初始位置在线上的第50个点
+            'velocity': 0.5,              # 初始速度
             'length': 5.0,              # 车长
             'width': 2.0,               # 车宽
             'lane': 2,                  # 初始车道号
-            'attributes': {'is_ego': True}
+            'attributes': {'is_ego': True , 'params': self.ego_params }  # 车辆属性
         }
 
-        # 环境其他车辆初始化配置
-        # 环境中的车辆数量也需要不一样
+
         self.env_vehicles_configs = {
-            'num_vehicles': 5,                   # 环境中车辆数量
-            'velocity_range': (5, 6),            # 速度范围
+            'num_vehicles': 7,                   # 环境中车辆数量
+            'velocity_range': (2 , 3),            # 速度范围
             'length_range': (4.0, 5.0),          # 车长范围
             'width_range': (1.8, 2.2),           # 车宽范围
-            'vehicle_spacing': 1.0,              # 间隔控制因子，越大越稀疏
-            'attributes': {'is_ego': False}
+            'vehicle_spacing': 10.0,              # 间隔控制因子，越大越稀疏
+            'attributes': {'is_ego': False , 'params': self.env_params}  # 车辆属性
         }
 
         # ======================== 策略管理 ========================
@@ -176,7 +177,6 @@ class MergeEnv(gym.Env):
         ego_init_state, env_vehicles_init_states = self.initializer.get_simulation_init_states(self.ego_config ,self.env_vehicles_configs)
         
         # Add ego vehicle
-        # TODO:如何生成多辆主车？？？
         if ego_init_state:
             ego_id = self.next_vehicle_id
             self.vehicles[ego_id] = Vehicle(
@@ -194,7 +194,7 @@ class MergeEnv(gym.Env):
             self.ego_vehicle_id = ego_id
             self.next_vehicle_id += 1
         
-        # 添加环境车辆
+
         if env_vehicles_init_states:
             for env_vehicle_state in env_vehicles_init_states:
                 env_id = self.next_vehicle_id
@@ -212,7 +212,6 @@ class MergeEnv(gym.Env):
                 )
                 self.next_vehicle_id += 1
         
-        # Calculate initial observation
         observation = self._get_observation()
         info = {}
         
@@ -244,7 +243,6 @@ class MergeEnv(gym.Env):
                 self.vehicle_model.update(vehicle, acceleration, steering_angle, self.dt)
         self.delete_env_vehicle()  # 删除已经到达终点的车辆
         
-        # 默认返回值
         observation = np.zeros(self.observation_space.shape, dtype=np.float32)  # 填充零值
         reward = 0.0
         terminated = False
@@ -280,7 +278,7 @@ class MergeEnv(gym.Env):
             
             # 监测环境状态
             env_status =self.monitor.check_environment_status()
-            print(f" Environment Status: {env_status}")
+            # print(f" Environment Status: {env_status}")
         
         if self.render_mode == "human":
             self.render()
@@ -311,7 +309,9 @@ class MergeEnv(gym.Env):
             'velocity': vehicle.v,  # 标量速度
             'acceleration': vehicle.a,
             'heading': vehicle.heading,
-            'is_ego': vehicle.attributes['attributes'].get('is_ego', False)
+            'is_ego': vehicle.attributes['attributes'].get('is_ego', False),
+            'params': vehicle.attributes['attributes'].get('params', {})
+            
             }
 
             # 计算周围车辆的相对信息
@@ -343,15 +343,17 @@ class MergeEnv(gym.Env):
 
                     neighbors.append({
                         'vehicle_id': other_vid,
-                        'position': position,
+                        'position': other_position,
                         'heading': heading,
                         'velocity': velocity,
+                        'acceleration': other_vehicle.a,
                         'relative_position': relative_position,
                         'relative_velocity': relative_velocity,
                         'relative_heading': relative_heading,
                         'length': length,
                         'withd': width,
-                        'is_ego': vehicle.attributes['attributes'].get('is_ego', False)
+                        'is_ego': other_vehicle.attributes['attributes'].get('is_ego', False),
+                        
                     })
 
             # 添加邻居信息
@@ -361,7 +363,8 @@ class MergeEnv(gym.Env):
         # 返回仿真状态
         state = {
             'active_vehicles': active_vehicles,
-            'reference_line': self.smooth_reference_line.tolist()
+            'reference_line': self.reference_line.tolist(),
+            'aux_reference_line': self.aux_reference_line.tolist(),
         }
         return state
     
@@ -443,7 +446,7 @@ class MergeEnv(gym.Env):
         y = self.reference_line[:, 1]
         tck, _ = splprep([x, y], s=0)
         u_fine = np.linspace(0, 1, 1000)
-        self.smooth_reference_line = np.array(splev(u_fine, tck)).T
+        self.reference_line = np.array(splev(u_fine, tck)).T
     
 
 
@@ -462,8 +465,8 @@ if __name__ == "__main__":
 
     render_mode = 'human' 
     episodes = 100
-    max_steps = 500 
-    env = make_env(render_mode=render_mode)
+    max_steps = 2000
+    env = make_env(render_mode=render_mode , max_episode_steps=max_steps)
     for i in range(episodes):
 
         
@@ -483,9 +486,9 @@ if __name__ == "__main__":
             action = np.array([acceleration, steering], dtype=np.float32)
             observation, reward, terminated, truncated, info = env.step(action)
             
-            print(f"Step: {env.current_step}, Reward: {reward:.2f}")
+            # print(f"Step: {env.current_step}, Reward: {reward:.2f}")
             
             # End episode if terminated or truncated
             if terminated or truncated:
-                print("Episode ended")
+                # print("Episode ended")
                 break
